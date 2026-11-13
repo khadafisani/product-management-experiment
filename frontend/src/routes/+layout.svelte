@@ -175,6 +175,22 @@
 							>{/each}
 					</div>
 				{/each}
+
+				{#if route.url.pathname.startsWith('/approvals')}<div
+						class="sidebar-submenu"
+						aria-label="Approval sections"
+					>
+						<a
+							href="/approvals/?section=invoices"
+							class:active={route.url.searchParams.get('section') !== 'deliveries'}
+							>Invoice approvals</a
+						>
+						<a
+							href="/approvals/?section=deliveries"
+							class:active={route.url.searchParams.get('section') === 'deliveries'}
+							>Delivery cancellations</a
+						>
+					</div>{/if}
 				{#if $user.permissions.includes('roles.manage')}<div class="nav-group">
 						<p>ADMINISTRATION</p>
 						<a

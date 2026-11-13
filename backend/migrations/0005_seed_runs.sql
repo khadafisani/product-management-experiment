@@ -1,0 +1,7 @@
+CREATE TABLE seed_runs (
+ name VARCHAR(100) PRIMARY KEY,
+ start_date DATE NOT NULL,
+ end_date DATE NOT NULL,
+ summary JSON NOT NULL,
+ completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

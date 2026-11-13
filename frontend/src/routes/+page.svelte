@@ -1,10 +1,23 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
+	import CursorList from '../lib/CursorList.svelte';
+	import RowActions, { type RowAction } from '../lib/RowActions.svelte';
+	import {
+		productColumns,
+		paymentColumns,
+		documentColumns,
+		forecastColumns
+	} from '../lib/list-config';
+	let listRefresh = $state(0),
+		pageRows = $state<any[]>([]),
+		forecastSummary = $state({ needs_replenishment: 0, suggested_order: 0 });
+
 	import { page as route } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { workspaceConnection, workspaceLowStock } from '../lib/auth';
 	import Icon from '../lib/Icon.svelte';
 	import { user } from '../lib/auth';
+	import { shortMoney } from '../lib/numbers';
 	import {
 		api,
 		money,
@@ -17,6 +30,26 @@
 		type Line
 	} from '../lib/api';
 	let page = $derived(route.url.searchParams.get('view') || 'Dashboard');
+	const listResource = $derived(
+		page === 'Products'
+			? 'products'
+			: page === 'Payments'
+				? 'payments'
+				: page === 'Purchase orders'
+					? 'purchase-orders'
+					: page === 'Purchase invoices'
+						? 'purchase-invoices'
+						: 'sales-invoices'
+	);
+	const listStatuses = $derived(
+		page === 'Products'
+			? ['Active', 'Inactive']
+			: page === 'Payments'
+				? []
+				: page === 'Purchase orders'
+					? ['Open', 'Partial', 'Complete', 'Warning']
+					: ['Unpaid', 'Partial Paid', 'Paid', 'Cancelled']
+	);
 	function focusModal(node: HTMLDialogElement) {
 		node.showModal();
 		return {
@@ -38,11 +71,9 @@
 		connected = $state(false),
 		error = $state(''),
 		notice = $state(''),
-		query = $state(''),
-		status = $state('All statuses'),
 		busy = $state(false);
 
-	let period = $state('6'),
+	let period = $state('12'),
 		horizon = $state(30),
 		lead = $state(7),
 		modal = $state('');
@@ -72,31 +103,6 @@
 		kind: 'purchase_invoice',
 		invoice_ids: [] as number[]
 	});
-	let searchIds = $state<number[] | null>(null),
-		searchTimer: ReturnType<typeof setTimeout>;
-	let filteredProducts = $derived(
-		products.filter(
-			(p) =>
-				(!query ||
-					(searchIds
-						? searchIds.includes(p.id)
-						: (p.name + ' ' + p.description).toLowerCase().includes(query.toLowerCase()))) &&
-				(status === 'All statuses' || p.status === status)
-		)
-	);
-	let filteredDocs = $derived(
-		documents.filter(
-			(d) =>
-				d.kind === kinds[page] &&
-				(d.number + ' ' + d.person).toLowerCase().includes(query.toLowerCase()) &&
-				(status === 'All statuses' || d.status === status)
-		)
-	);
-	let filteredPayments = $derived(
-		payments.filter((p) =>
-			(p.reference + ' ' + p.invoices).toLowerCase().includes(query.toLowerCase())
-		)
-	);
 	let activeProducts = $derived(products.filter((p) => p.status === 'Active'));
 	let lowStock = $derived(
 		products.filter((p) => p.status === 'Active' && p.remaining_quantity <= p.reorder_level)
@@ -169,6 +175,11 @@
 		}[];
 	} | null>(null);
 	async function load() {
+		listRefresh++;
+		if (page !== 'Dashboard') {
+			loading = false;
+			return;
+		}
 		loading = true;
 		error = '';
 		try {
@@ -191,14 +202,11 @@
 		}
 	}
 	onMount(() => {
-		void load();
+		loading = false;
 		const refresh = () => {
-			void load();
+			if (page === 'Dashboard') void load();
 		};
 		const reset = () => {
-			query = '';
-			status = 'All statuses';
-			searchIds = null;
 			error = '';
 		};
 		window.addEventListener('workspace-refresh', refresh);
@@ -209,18 +217,15 @@
 		};
 	});
 	$effect(() => {
-		workspaceConnection.set(connected);
-		workspaceLowStock.set(lowStock.length);
+		if (page === 'Dashboard') untrack(() => void load());
+	});
+	$effect(() => {
+		if (page === 'Dashboard') workspaceConnection.set(connected);
+		if (page === 'Dashboard') workspaceLowStock.set(lowStock.length);
 	});
 	function navigate(next: string) {
 		void goto(next === 'Dashboard' ? '/' : `/?view=${encodeURIComponent(next)}`);
-		query = '';
-		status = 'All statuses';
-		searchIds = null;
 		error = '';
-	}
-	function purchaseOrderNumber(id: number | null) {
-		return documents.find((d) => d.id === id && d.kind === 'purchase_order')?.number;
 	}
 	function flash(message: string) {
 		notice = message;
@@ -248,9 +253,18 @@
 		modal = 'product';
 		error = '';
 	}
-	function openDocument() {
+	async function openDocument() {
 		if (!$user?.permissions.includes('invoices.write')) {
 			flash('Your role does not have permission for this action.');
+			return;
+		}
+		try {
+			[products, documents] = await Promise.all([
+				api<Product[]>('/products'),
+				api<Document[]>('/documents')
+			]);
+		} catch (e) {
+			error = (e as Error).message;
 			return;
 		}
 		purchaseReview = null;
@@ -265,13 +279,13 @@
 		modal = 'document';
 		error = '';
 	}
-	function replenish(p: { id: number; name: string }, quantity?: number) {
+	async function replenish(p: { id: number; name: string }, quantity?: number) {
 		if (!$user?.permissions.includes('invoices.write')) return;
+		await openDocument();
 		const existing = products.find((product) => product.id === p.id);
 		if (!existing || existing.status !== 'Active') return;
 		const prediction = forecasts.find((f) => f.id === p.id);
 		navigate('Purchase invoices');
-		openDocument();
 		draft.kind = 'purchase_invoice';
 		draft.number = `PINV-${today().replaceAll('-', '')}-${Date.now().toString().slice(-6)}`;
 		draft.lines = [
@@ -287,9 +301,15 @@
 			}
 		];
 	}
-	function openPayment() {
+	async function openPayment() {
 		if (!$user?.permissions.includes('payments.write')) {
 			flash('Your role does not have permission for this action.');
+			return;
+		}
+		try {
+			documents = await api<Document[]>('/documents');
+		} catch (e) {
+			error = (e as Error).message;
 			return;
 		}
 		purchaseReview = null;
@@ -384,36 +404,11 @@
 			? payment.invoice_ids.filter((i) => i !== id)
 			: [...payment.invoice_ids, id];
 	}
-	function searchProducts() {
-		clearTimeout(searchTimer);
-		searchIds = null;
-		const q = query;
-		if (!q) return;
-		searchTimer = setTimeout(async () => {
-			try {
-				const result = await api<{ hits: Product[] }>(`/search?q=${encodeURIComponent(q)}`);
-				if (query === q) searchIds = result.hits.map((p) => p.id);
-			} catch {}
-		}, 250);
-	}
 	async function updateForecast() {
-		try {
-			forecasts = await api(`/forecast?days=${horizon}&lead_time=${lead}`);
-		} catch (e) {
-			error = (e as Error).message;
-		}
+		listRefresh++;
 	}
 	function exportCsv() {
-		const rows: any[] =
-			page === 'Products'
-				? filteredProducts
-				: page === 'Payments'
-					? filteredPayments
-					: page === 'Stock forecast'
-						? forecasts
-						: page === 'Dashboard'
-							? documents
-							: filteredDocs;
+		const rows: any[] = page === 'Dashboard' ? documents : pageRows;
 		if (!rows.length) {
 			flash('No records to export');
 			return;
@@ -434,6 +429,22 @@
 		a.download = page.toLowerCase().replaceAll(' ', '-') + '.csv';
 		a.click();
 		URL.revokeObjectURL(url);
+	}
+	function productActions(row: Product): RowAction[] {
+		const actions: RowAction[] = [];
+		if ($user?.permissions.includes('products.write'))
+			actions.push({ label: 'Edit product', icon: 'edit', run: () => openProduct(row) });
+		if (
+			row.status === 'Active' &&
+			row.remaining_quantity <= row.reorder_level &&
+			$user?.permissions.includes('invoices.write')
+		)
+			actions.push({
+				label: 'Create purchase invoice',
+				icon: 'invoice',
+				run: () => replenish(row)
+			});
+		return actions;
 	}
 	const badge = (s: string) =>
 		['Paid', 'Complete', 'Active', 'Healthy'].includes(s)
@@ -460,7 +471,7 @@
 		content="Stockroom product management: purchasing, inventory, sales, payments and stock forecasts."
 	/></svelte:head
 >
-<main>
+<main class:list-page={page !== 'Dashboard'}>
 	<div class="page-heading">
 		<div>
 			<div class="eyebrow">YOUR BUSINESS, IN FOCUS</div>
@@ -468,8 +479,14 @@
 			<p>{descriptions[page]}</p>
 		</div>
 		<div class="heading-actions">
+			{#if page === 'Products' && $user?.permissions.includes('search.manage')}<button
+					class="icon-button"
+					title="Rebuild search index"
+					aria-label="Rebuild search index"
+					onclick={syncSearch}><Icon name="refresh" /></button
+				>{/if}
 			<button class="button secondary" onclick={exportCsv}
-				><Icon name="export" size={15} /> Export</button
+				><Icon name="export" size={15} /> {page === 'Dashboard' ? 'Export' : 'Export page'}</button
 			><button
 				class="button primary"
 				onclick={page === 'Dashboard' || page === 'Stock forecast'
@@ -495,12 +512,12 @@
 	{#if loading}<div class="loading" role="status">Loading your workspace…</div>{/if}
 	{#if page === 'Dashboard'}
 		<div class="stats-grid">
-			{#each [{ label: 'Total sales', value: money(salesTotal), icon: 'up', note: `${sales.length} customer invoices`, color: 'green' }, { label: 'Total purchases', value: money(purchaseTotal), icon: 'down', note: `${purchases.length} supplier invoices`, color: 'blue' }, { label: 'Outstanding payables', value: money(payable), icon: 'clock', note: `${purchases.filter((d) => d.remaining_payment > 0).length} invoices awaiting payment`, color: 'orange' }, { label: 'Products in stock', value: compact(products.reduce((s, p) => s + p.remaining_quantity, 0)), icon: 'products', note: `${products.length} products in your catalog`, color: 'purple' }] as stat}
+			{#each [{ label: 'Total sales', value: shortMoney(salesTotal), exact: money(salesTotal), icon: 'up', note: `${sales.length} customer invoices`, color: 'green' }, { label: 'Total purchases', value: shortMoney(purchaseTotal), exact: money(purchaseTotal), icon: 'down', note: `${purchases.length} supplier invoices`, color: 'blue' }, { label: 'Outstanding payables', value: shortMoney(payable), exact: money(payable), icon: 'clock', note: `${purchases.filter((d) => d.remaining_payment > 0).length} invoices awaiting payment`, color: 'orange' }, { label: 'Products in stock', value: compact(products.reduce((s, p) => s + p.remaining_quantity, 0)), exact: `${products.reduce((s, p) => s + p.remaining_quantity, 0)} available units`, icon: 'products', note: `${products.length} products in your catalog`, color: 'purple' }] as stat}
 				<section class="stat-card">
 					<div class="stat-title">
 						{stat.label}<span class="stat-icon {stat.color}"><Icon name={stat.icon} /></span>
 					</div>
-					<div class="stat-value">{stat.value}</div>
+					<div class="stat-value" title={stat.exact} aria-label={stat.exact}>{stat.value}</div>
 					<p>{stat.note}</p>
 				</section>{/each}
 		</div>
@@ -521,7 +538,7 @@
 						><i class="purchase-dot"></i>Purchases</span
 					><span><i class="payment-dot"></i>Payments</span>
 				</div>
-				<div class="bar-chart">
+				<div class="bar-chart" class:year-chart={period === '12'}>
 					<div class="y-axis">
 						{#each [1, 0.75, 0.5, 0.25, 0] as fraction}<span
 								>{chartMax === 1 ? '0' : compact(chartMax * fraction)}</span
@@ -612,7 +629,9 @@
 					</p>
 				</div>
 			</div>
-			<strong class="receivables-amount">{money(receivable)}</strong>
+			<strong class="receivables-amount" title={money(receivable)} aria-label={money(receivable)}
+				>{shortMoney(receivable)}</strong
+			>
 			<a class="button secondary receivables-link" href="/?view=Sales%20invoices"
 				>View sales invoices <Icon name="arrow" size={15} /></a
 			>
@@ -637,8 +656,9 @@
 										><a class="record-link" href={`/documents/${d.id}/`}>{d.number}</a><small
 											>{d.person} · {d.date}</small
 										></td
-									><td>{d.kind.replaceAll('_', ' ')}</td><td class="amount"
-										>{money(d.grand_total)}</td
+									><td>{d.kind.replaceAll('_', ' ')}</td><td
+										class="amount"
+										title={money(d.grand_total)}>{shortMoney(d.grand_total)}</td
 									><td><span class="badge {badge(d.status)}">{d.status}</span></td></tr
 								>{:else}<tr
 									><td colspan="4" class="empty-cell"
@@ -745,7 +765,7 @@
 				<div class="stat-title">
 					Needs replenishment <span><Icon name="arrow" size={16} /></span>
 				</div>
-				<div class="stat-value">{forecasts.filter((f) => f.risk !== 'Healthy').length}</div>
+				<div class="stat-value">{forecastSummary.needs_replenishment}</div>
 				<p>Products at risk or below reorder level</p>
 			</section>
 			<section class="stat-card">
@@ -753,7 +773,7 @@
 					Suggested order <span><Icon name="arrow" size={16} /></span>
 				</div>
 				<div class="stat-value">
-					{compact(forecasts.reduce((s, f) => s + f.suggested_order, 0))} <small>units</small>
+					{compact(forecastSummary.suggested_order)} <small>units</small>
 				</div>
 				<p>To cover horizon, lead time, and buffer</p>
 			</section>
@@ -765,219 +785,63 @@
 				<p>Based on the last 30 calendar days</p>
 			</section>
 		</div>
-		<section class="panel">
-			<div class="panel-heading">
-				<div>
-					<h2>Stock outlook</h2>
-					<p>Projected stock can go below zero to show unmet demand.</p>
-				</div>
-			</div>
-			<div class="table-wrap">
-				<table>
-					<thead
-						><tr
-							><th>PRODUCT</th><th>REMAINING QTY</th><th>DAILY SALES</th><th>COVERAGE</th><th
-								>PROJECTED STOCK</th
-							><th>ORDER SUGGESTION</th><th>STATUS</th><th>ACTION</th></tr
-						></thead
-					><tbody
-						>{#each forecasts as f}<tr
-								><td><a class="record-link" href={`/products/${f.id}/`}>{f.name}</a></td><td
-									>{f.quantity}</td
-								><td>{f.daily_sales.toFixed(2)}</td><td
-									>{f.days_remaining === null
-										? 'No recent sales'
-										: f.days_remaining.toFixed(1) + ' days'}</td
-								><td class:negative={f.projected_stock < 0}>{f.projected_stock.toFixed(0)}</td><td
-									><strong>{f.suggested_order} units</strong></td
-								><td><span class="badge {badge(f.risk)}">{f.risk}</span></td><td
-									>{#if f.risk !== 'Healthy'}<button
-											class="button secondary replenish-button"
-											aria-label={`Create purchase invoice for ${f.name}`}
-											onclick={() => replenish(f, f.suggested_order)}>+ Purchase invoice</button
-										>{/if}</td
-								></tr
-							>{:else}<tr
-								><td colspan="8" class="empty-cell"
-									><span><Icon name="arrow" size={16} /></span><strong
-										>Your forecast starts here</strong
-									>
-									<p>Add products and record sales to see demand estimates.</p></td
-								></tr
-							>{/each}</tbody
-					>
-				</table>
-			</div>
-		</section>
+
+		<CursorList
+			resource="forecast"
+			title="Stock outlook"
+			columns={forecastColumns}
+			statuses={['Healthy', 'Reorder now', 'Out of stock']}
+			dateLabel="Product created"
+			refresh={listRefresh}
+			extra={{ days: horizon, lead_time: lead }}
+			onpage={(p) => {
+				pageRows = p.items;
+				forecastSummary = p.summary || { needs_replenishment: 0, suggested_order: 0 };
+			}}
+		>
+			{#snippet actions(f)}<RowActions
+					href={`/products/${f.id}/`}
+					label={f.name}
+					items={f.risk !== 'Healthy' && $user?.permissions.includes('invoices.write')
+						? [
+								{
+									label: 'Create purchase invoice',
+									icon: 'invoice',
+									run: () => replenish(f, Number(f.suggested_order))
+								}
+							]
+						: []}
+				/>{/snippet}
+		</CursorList>
 		<p class="method-note">
 			Method: daily demand = units sold in the last 30 days ÷ 30. Suggested order = demand ×
 			(horizon + lead time) + reorder buffer - current stock, rounded up. Estimates assume steady
 			demand and exclude incoming POs.
 		</p>
 	{:else}
-		<section class="panel records">
-			<div class="records-toolbar">
-				<div class="tabs">
-					<button class="selected" onclick={() => (status = 'All statuses')}
-						>All {page.toLowerCase()}
-						<span
-							>{page === 'Products'
-								? products.length
-								: page === 'Payments'
-									? payments.length
-									: documents.filter((d) => d.kind === kinds[page]).length}</span
-						></button
-					>
-				</div>
-				<div class="filters">
-					<label class="search-field"
-						><span><Icon name="search" size={16} /></span><input
-							aria-label="Search records"
-							placeholder={`Search ${page.toLowerCase()}...`}
-							bind:value={query}
-							oninput={page === 'Products' ? searchProducts : () => {}}
-						/></label
-					>{#if page !== 'Payments'}<select aria-label="Filter by status" bind:value={status}
-							><option>All statuses</option
-							>{#each page === 'Products' ? ['Active', 'Inactive'] : page === 'Purchase orders' ? ['Open', 'Partial', 'Complete', 'Warning'] : ['Unpaid', 'Partial Paid', 'Paid', ...(page === 'Sales invoices' ? ['Cancelled'] : [])] as s}<option
-									>{s}</option
-								>{/each}</select
-						>{/if}{#if page === 'Products'}<button
-							class="icon-button"
-							title="Rebuild search index"
-							onclick={syncSearch}><Icon name="refresh" /></button
-						>{/if}
-				</div>
-			</div>
-			<div class="table-wrap">
-				<table>
-					<thead
-						>{#if page === 'Products'}<tr
-								><th>PRODUCT</th><th>PHYSICAL STOCK</th><th>REMAINING QTY</th><th>UNIT PRICE</th><th
-									>REORDER LEVEL</th
-								><th>STATUS</th><th></th></tr
-							>{:else if page === 'Payments'}<tr
-								><th>REFERENCE</th><th>DATE</th><th>TYPE</th><th>INVOICES</th><th>AMOUNT</th><th
-									aria-label="Actions"
-								></th></tr
-							>{:else}<tr
-								><th>{page === 'Purchase orders' ? 'ORDER' : 'INVOICE'} NUMBER</th><th
-									>{page === 'Sales invoices' ? 'CUSTOMER' : 'PERSON IN CHARGE'}</th
-								><th>DATE</th><th>GRAND TOTAL</th>{#if page !== 'Purchase orders'}<th
-										>OUTSTANDING</th
-									>{/if}<th>STATUS</th><th></th></tr
-							>{/if}</thead
-					><tbody>
-						{#if page === 'Products'}{#each filteredProducts as p}<tr
-									><td
-										><div class="product-cell">
-											{#if p.photo}<img src={p.photo} alt="" />{:else}<span class="product-letter"
-													>{p.name.slice(0, 2).toUpperCase()}</span
-												>{/if}
-											<div>
-												<a class="record-link" href={`/products/${p.id}/`}>{p.name}</a><small
-													>{p.description || 'No description'}</small
-												>
-											</div>
-										</div></td
-									><td
-										><strong class:negative={p.remaining_quantity <= p.reorder_level}
-											>{p.quantity}</strong
-										>
-										<span class="muted">units</span
-										>{#if p.remaining_quantity <= p.reorder_level}<span class="stock-alert"
-												>Low stock</span
-											>{/if}</td
-									><td
-										><strong class:negative={p.remaining_quantity <= p.reorder_level}
-											>{p.remaining_quantity}</strong
-										> <span class="muted">available</span></td
-									><td>{money(p.price)}</td><td>{p.reorder_level} units</td><td
-										><span class="badge {badge(p.status)}">{p.status}</span></td
-									><td
-										><button class="text-link" onclick={() => openProduct(p)}>Edit &#8599;</button
-										>{#if p.status === 'Active' && (p.remaining_quantity <= p.reorder_level || forecasts.some((f) => f.id === p.id && f.risk !== 'Healthy'))}<button
-												class="button secondary replenish-button"
-												aria-label={`Create purchase invoice for ${p.name}`}
-												onclick={() => replenish(p)}>+ Purchase invoice</button
-											>{/if}</td
-									></tr
-								>{:else}<tr
-									><td colspan="7" class="empty-cell"
-										><span><Icon name="arrow" size={16} /></span><strong
-											>{query ? 'No matching products' : 'Make room for your first product'}</strong
-										>
-										<p>Add products to start managing your inventory.</p>
-										<button class="button primary" onclick={() => openProduct()}
-											>+ Add product</button
-										></td
-									></tr
-								>{/each}
-						{:else if page === 'Payments'}{#each filteredPayments as p}<tr
-									><td><a class="record-link" href={`/payments/${p.id}/`}>{p.reference}</a></td><td
-										>{p.date}</td
-									><td>{p.kind === 'sales_invoice' ? 'Customer receipt' : 'Supplier payment'}</td
-									><td
-										><div class="inline-records">
-											<a
-												class="invoice-count-link"
-												href={`/payments/${p.id}/`}
-												aria-label={`View ${p.invoice_links?.length || 0} invoices for ${p.reference}`}
-												>{p.invoice_links?.length || 0}
-												{p.invoice_links?.length === 1 ? 'invoice' : 'invoices'}</a
-											>
-										</div></td
-									><td class="amount">{money(p.amount)}</td><td
-										><a
-											class="text-link"
-											href={`/payments/${p.id}/`}
-											aria-label={`View payment ${p.reference}`}>View &#8599;</a
-										></td
-									></tr
-								>{:else}<tr
-									><td colspan="6" class="empty-cell"
-										><span><Icon name="arrow" size={16} /></span><strong>No payments found</strong>
-										<p>Record a payment against one or more outstanding invoices.</p></td
-									></tr
-								>{/each}
-						{:else}{#each filteredDocs as d}<tr
-									><td
-										><a class="record-link" href={`/documents/${d.id}/`}>{d.number}</a
-										>{#if d.purchase_order_id && purchaseOrderNumber(d.purchase_order_id)}<a
-												class="purchase-order-reference list-order-reference"
-												href={`/documents/${d.purchase_order_id}/`}
-												><span>PO</span>{purchaseOrderNumber(d.purchase_order_id)}</a
-											>{/if}</td
-									><td>{d.person}</td><td>{d.date}</td><td class="amount">{money(d.grand_total)}</td
-									>{#if page !== 'Purchase orders'}<td>{money(d.remaining_payment)}</td>{/if}<td
-										><span class="badge {badge(d.status)}">{d.status}</span></td
-									><td><a class="text-link" href={`/documents/${d.id}/`}>View &#8599;</a></td></tr
-								>{:else}<tr
-									><td colspan="7" class="empty-cell"
-										><span><Icon name="arrow" size={16} /></span><strong
-											>{query || status !== 'All statuses'
-												? 'No matching records'
-												: 'A fresh start for your ' + page.toLowerCase()}</strong
-										>
-										<p>Create your first record to bring your workspace to life.</p>
-										<button class="button primary" onclick={openDocument}
-											>+ Create {page === 'Purchase orders' ? 'order' : 'invoice'}</button
-										></td
-									></tr
-								>{/each}{/if}</tbody
-					>
-				</table>
-			</div>
-			<div class="table-footer">
-				<span
-					>{page === 'Products'
-						? filteredProducts.length
-						: page === 'Payments'
-							? filteredPayments.length
-							: filteredDocs.length} records</span
-				><span>All amounts in IDR</span>
-			</div>
-		</section>
+		{#key listResource}<CursorList
+				resource={listResource}
+				title={page}
+				columns={page === 'Products'
+					? productColumns
+					: page === 'Payments'
+						? paymentColumns
+						: documentColumns(page === 'Purchase orders')}
+				statuses={listStatuses}
+				dateLabel={page === 'Products' ? 'Created date' : 'Date'}
+				refresh={listRefresh}
+				onpage={(p) => (pageRows = p.items)}
+			>
+				{#snippet actions(row)}<RowActions
+						href={page === 'Products'
+							? `/products/${row.id}/`
+							: page === 'Payments'
+								? `/payments/${row.id}/`
+								: `/documents/${row.id}/`}
+						label={row.name || row.reference || row.number}
+						items={page === 'Products' ? productActions(row) : []}
+					/>{/snippet}
+			</CursorList>{/key}
 	{/if}
 	<footer class="main-footer">
 		<span

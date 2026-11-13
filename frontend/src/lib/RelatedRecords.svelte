@@ -49,7 +49,8 @@
 										? `/payments/${r.id}/`
 										: type === 'delivery'
 											? `/delivery-orders/${r.id}/`
-											: `/documents/${r.id}/`}>{r.number || r.reference || `Delivery #${r.id}`}</a
+											: `/documents/${r.id}/`}
+									>{r.number || r.reference || `DO-${String(r.id).padStart(6, '0')}`}</a
 								></td
 							><td>{r.date}</td><td
 								>{type === 'payment'

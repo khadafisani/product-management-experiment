@@ -61,3 +61,4 @@ pub mod auth_seed;
 
 #[cfg(test)]
 mod auth_delivery_tests;
+pub mod demo_year_seed;

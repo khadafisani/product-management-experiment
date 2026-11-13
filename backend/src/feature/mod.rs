@@ -11,3 +11,5 @@ pub(crate) mod sale_invoice;
 pub(crate) mod search;
 
 pub(crate) mod related;
+
+pub(crate) mod pagination;

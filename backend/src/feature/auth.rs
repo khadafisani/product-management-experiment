@@ -355,6 +355,10 @@ pub(crate) async fn guard(State(a): State<App>, mut req: Request, next: Next) ->
         .map(|p| p.as_str())
         .unwrap_or("");
     let permission = match route {
+        "/api/lists/{resource}" => {
+            crate::feature::pagination::permission(path.rsplit('/').next().unwrap_or(""))
+                .ok_or_else(|| Error(StatusCode::NOT_FOUND, "List not found".into()))?
+        }
         "/api/auth/me" | "/api/auth/password" | "/api/auth/logout-all" => "profile.read",
         "/api/roles" | "/api/roles/{id}" | "/api/users" | "/api/users/{id}/role" => "roles.manage",
         "/api/payments" | "/api/payments/{id}" => {

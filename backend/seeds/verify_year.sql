@@ -1,0 +1,20 @@
+-- Read-only year demo checks. Every violations value must be zero.
+SELECT 'stock ledger' check_name,(SELECT COUNT(*) FROM products p LEFT JOIN (SELECT product_id,SUM(quantity) physical,SUM(remaining_delta) available FROM stock_movements GROUP BY product_id) m ON m.product_id=p.id WHERE p.name LIKE '[Year Demo] %' AND (p.quantity<>COALESCE(m.physical,0) OR p.remaining_quantity<>COALESCE(m.available,0) OR p.remaining_quantity<0 OR p.remaining_quantity>p.quantity)) violations
+UNION ALL
+SELECT 'invoice totals' check_name,(SELECT COUNT(*) FROM documents d LEFT JOIN (SELECT document_id,SUM(subtotal) total FROM document_lines GROUP BY document_id) l ON l.document_id=d.id WHERE d.number LIKE 'YEAR-%' AND d.grand_total<>COALESCE(l.total,0)) violations
+UNION ALL
+SELECT 'invoice balances' check_name,(SELECT COUNT(*) FROM documents d LEFT JOIN (SELECT invoice_id,SUM(amount) paid FROM payment_allocations GROUP BY invoice_id) p ON p.invoice_id=d.id WHERE d.number LIKE 'YEAR-%' AND d.kind<>'purchase_order' AND d.status<>'Cancelled' AND (d.remaining_payment<>d.grand_total-COALESCE(p.paid,0) OR d.remaining_payment<0 OR d.status<>CASE WHEN d.remaining_payment=0 THEN 'Paid' WHEN d.remaining_payment=d.grand_total THEN 'Unpaid' ELSE 'Partial Paid' END)) violations
+UNION ALL
+SELECT 'payment allocations' check_name,(SELECT COUNT(*) FROM payments p LEFT JOIN (SELECT payment_id,SUM(amount) amount FROM payment_allocations GROUP BY payment_id) a ON a.payment_id=p.id WHERE p.reference LIKE 'YEAR-%' AND p.amount<>COALESCE(a.amount,0)) violations
+UNION ALL
+SELECT 'PO balance' check_name,(SELECT COUNT(*) FROM document_lines l JOIN documents po ON po.id=l.document_id LEFT JOIN (SELECT d.purchase_order_id,l.product_id,SUM(l.quantity) received FROM documents d JOIN document_lines l ON l.document_id=d.id WHERE d.kind='purchase_invoice' AND d.status<>'Cancelled' GROUP BY d.purchase_order_id,l.product_id) r ON r.purchase_order_id=po.id AND r.product_id=l.product_id WHERE po.number LIKE 'YEAR-PO-%' AND l.realized_quantity<>l.quantity-COALESCE(r.received,0)) violations
+UNION ALL
+SELECT 'delivery quantities' check_name,(SELECT COUNT(*) FROM document_lines l JOIN documents d ON d.id=l.document_id LEFT JOIN (SELECT dd.sales_invoice_detail_id,SUM(CASE WHEN o.status='Delivered' THEN dd.quantity ELSE 0 END) delivered,SUM(CASE WHEN o.status IN ('Approved','On Delivery') THEN dd.quantity ELSE 0 END) reserved FROM delivery_order_details dd JOIN delivery_orders o ON o.id=dd.delivery_order_id GROUP BY dd.sales_invoice_detail_id) q ON q.sales_invoice_detail_id=l.id WHERE d.number LIKE 'YEAR-SI-%' AND (l.delivered_quantity<>COALESCE(q.delivered,0) OR l.on_delivery_quantity<>COALESCE(q.reserved,0) OR l.quantity<l.delivered_quantity+l.on_delivery_quantity)) violations
+UNION ALL
+SELECT 'unpaid deliveries' check_name,(SELECT COUNT(*) FROM delivery_orders o JOIN documents d ON d.id=o.sales_invoice_id WHERE d.number LIKE 'YEAR-%' AND d.status NOT IN ('Paid','Partial Paid')) violations
+UNION ALL
+SELECT 'paid purchase release' check_name,(SELECT COUNT(*) FROM documents d WHERE d.number LIKE 'YEAR-PI-%' AND d.stock_released<>(d.status='Paid')) violations;
+
+SELECT DATE_FORMAT(date,'%Y-%m') month,kind,COUNT(*) records,SUM(grand_total) total FROM documents WHERE number LIKE 'YEAR-%' GROUP BY DATE_FORMAT(date,'%Y-%m'),kind ORDER BY month,kind;
+
+SELECT name,CAST(start_date AS CHAR) start_date,CAST(end_date AS CHAR) end_date,summary FROM seed_runs WHERE name='demo-year-v1';

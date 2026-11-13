@@ -1,6 +1,8 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
+	import CursorList from '../../lib/CursorList.svelte';
+	import { deliveryColumns } from '../../lib/list-config';
+	let refresh = $state(0);
+	import RowActions, { type RowAction } from '../../lib/RowActions.svelte';
 	import { api, today, type Document } from '../../lib/api';
 	import { user } from '../../lib/auth';
 	type Order = {
@@ -23,8 +25,7 @@
 		selected: number;
 		notes: string;
 	};
-	let orders = $state<Order[]>([]),
-		invoices = $state<Document[]>([]),
+	let invoices = $state<Document[]>([]),
 		lines = $state<InvoiceLine[]>([]);
 	let error = $state(''),
 		notice = $state(''),
@@ -41,16 +42,8 @@
 	const canWrite = $derived($user?.permissions.includes('delivery.write'));
 	const canApprove = $derived($user?.permissions.includes('delivery.approve'));
 	async function load() {
-		try {
-			[orders, invoices] = await Promise.all([
-				api<Order[]>('/delivery-orders'),
-				api<Document[]>('/sales-invoices')
-			]);
-		} catch (e) {
-			error = (e as Error).message;
-		}
+		refresh++;
 	}
-	onMount(load);
 	async function selectInvoice() {
 		try {
 			const d = await api<any>(`/documents/${draft.sales_invoice_id}`);
@@ -59,7 +52,13 @@
 			error = (e as Error).message;
 		}
 	}
-	function create() {
+	async function create() {
+		try {
+			invoices = await api<Document[]>('/sales-invoices');
+		} catch (e) {
+			error = (e as Error).message;
+			return;
+		}
 		editing = null;
 		draft = { sales_invoice_id: 0, driver_name: '', date: today(), address: '', note: '' };
 		lines = [];
@@ -67,6 +66,7 @@
 		error = '';
 	}
 	async function edit(order: Order) {
+		invoices = await api<Document[]>('/sales-invoices');
 		editing = order.id;
 		draft = {
 			sales_invoice_id: order.sales_invoice_id,
@@ -132,7 +132,7 @@
 			);
 			notice = requestCancellation
 				? 'Cancellation request sent to Finance.'
-				: `Delivery #${o.id}: ${status}`;
+				: `DO-${String(o.id).padStart(6, '0')}: ${status}`;
 			await load();
 		} catch (e) {
 			error = (e as Error).message;
@@ -140,18 +140,41 @@
 			busy = false;
 		}
 	}
-	function view(id: number) {
-		void goto(`/delivery-orders/${id}/`);
+	function orderActions(o: Order): RowAction[] {
+		const items: RowAction[] = [];
+		if (o.status === 'Draft' && canWrite)
+			items.push({ label: 'Edit draft', icon: 'edit', run: () => edit(o) });
+		if (o.status === 'Draft' && canApprove)
+			items.push({ label: 'Approve delivery', icon: 'check', run: () => change(o, 'Approved') });
+		if (o.status === 'Approved' && canWrite)
+			items.push({
+				label: 'Mark on delivery',
+				icon: 'delivery',
+				run: () => change(o, 'On Delivery')
+			});
+		if (['Approved', 'On Delivery'].includes(o.status) && canWrite)
+			items.push({ label: 'Mark delivered', icon: 'check', run: () => change(o, 'Delivered') });
+		if (
+			(o.status === 'Draft' && canWrite) ||
+			(['Approved', 'On Delivery'].includes(o.status) && (canWrite || canApprove))
+		)
+			items.push({
+				label: o.status !== 'Draft' && !canApprove ? 'Request cancellation' : 'Cancel delivery',
+				icon: 'close',
+				danger: true,
+				run: () => change(o, 'Cancelled')
+			});
+		return items;
 	}
 </script>
 
-<main class="feature-page">
-	<header>
+<main class="feature-page list-page">
+	<header class="delivery-heading">
 		<div>
 			<h1>Delivery orders</h1>
 			<p>Finance approval reserves the remaining sales invoice quantities.</p>
 		</div>
-		{#if canWrite}<button onclick={create}>New delivery order</button>{/if}
+		{#if canWrite}<button class="button primary" onclick={create}>+ New delivery order</button>{/if}
 	</header>
 	{#if error}<p class="error" role="alert">{error}</p>{/if}{#if notice}<p role="status">
 			{notice}
@@ -203,40 +226,33 @@
 				onclick={() => (showForm = false)}>Close</button
 			>
 		</form>{/if}
-	<table>
-		<thead
-			><tr
-				><th>ID</th><th>Invoice</th><th>Driver / date</th><th>Address</th><th>Status</th><th
-					>Actions</th
-				></tr
-			></thead
-		><tbody
-			>{#each orders as o}<tr
-					><td><a class="record-link" href={`/delivery-orders/${o.id}/`}>Delivery #{o.id}</a></td
-					><td
-						><a class="record-link" href={`/documents/${o.sales_invoice_id}/`}
-							>{invoices.find((i) => i.id === o.sales_invoice_id)?.number ?? o.sales_invoice_id}</a
-						></td
-					><td>{o.driver_name}<br />{o.date}</td><td>{o.address}</td><td>{o.status}</td><td
-						><button onclick={() => view(o.id)}>Details</button
-						>{#if o.status === 'Draft' && canWrite}<button disabled={busy} onclick={() => edit(o)}
-								>Edit</button
-							>{/if}{#if o.status === 'Draft' && canApprove}<button
-								disabled={busy}
-								onclick={() => change(o, 'Approved')}>Approve</button
-							>{/if}{#if o.status === 'Approved' && canWrite}<button
-								disabled={busy}
-								onclick={() => change(o, 'On Delivery')}>On delivery</button
-							>{/if}{#if ['Approved', 'On Delivery'].includes(o.status) && canWrite}<button
-								disabled={busy}
-								onclick={() => change(o, 'Delivered')}>Delivered</button
-							>{/if}{#if (o.status === 'Draft' && canWrite) || (['Approved', 'On Delivery'].includes(o.status) && (canWrite || canApprove))}<button
-								disabled={busy}
-								onclick={() => change(o, 'Cancelled')}
-								>{o.status !== 'Draft' && !canApprove ? 'Request cancellation' : 'Cancel'}</button
-							>{/if}</td
-					></tr
-				>{:else}<tr><td colspan="6">No delivery orders yet.</td></tr>{/each}</tbody
-		>
-	</table>
+	<CursorList
+		resource="delivery-orders"
+		title="Delivery orders"
+		columns={deliveryColumns}
+		statuses={['Draft', 'Approved', 'On Delivery', 'Delivered', 'Cancelled']}
+		{refresh}
+	>
+		{#snippet actions(o)}<RowActions
+				href={`/delivery-orders/${o.id}/`}
+				label={o.number}
+				items={orderActions(o)}
+				disabled={busy}
+			/>{/snippet}
+	</CursorList>
 </main>
+
+<style>
+	.delivery-heading {
+		gap: 20px;
+		flex-wrap: wrap;
+	}
+	.delivery-heading > div {
+		flex: 1;
+		min-width: 220px;
+	}
+	.delivery-heading > button {
+		margin: 0;
+		white-space: nowrap;
+	}
+</style>

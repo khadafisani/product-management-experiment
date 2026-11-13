@@ -213,3 +213,66 @@ Product pages show inventory plus the latest ten purchase orders, purchase invoi
 Detail APIs are `GET /api/documents/{id}`, `/api/payments/{id}`, `/api/delivery-orders/{id}`, and `/api/products/{id}`. Missing records return 404. Payment lists include structured `invoice_links` as well as the existing display text. The existing schema already provides the foreign keys; no data migration is required for these navigation changes.
 
 The static frontend emits `200.html` for dynamic routes. The Rust server serves this fallback for frontend routes, allowing bookmarked detail URLs and reloads. If the frontend is hosted separately, configure the host to rewrite unmatched frontend paths to `200.html` and proxy `/api` to Rust.
+
+
+## Full-year demo dataset
+
+For a larger, connected dataset covering the trailing twelve months through today in Asia/Jakarta:
+
+```powershell
+cd backend
+cargo run --bin seed_year
+```
+
+This has been loaded locally for **2025-11-15 through 2026-11-14**, with transactions on all 365 days:
+
+| Records added | Count |
+|---|---:|
+| Products | 40 |
+| Purchase orders | 104 |
+| Purchase invoices | 128 |
+| Sales invoices | 1,460 |
+| Document details | 5,563 |
+| Payments | 1,382 |
+| Payment allocations | 1,548 |
+| Delivery orders | 1,460 |
+| Delivery details | 4,415 |
+| Stock movements | 5,996 |
+| Invoice void requests | 152 |
+| Delivery cancellation requests | 152 |
+
+The fixture uses separate `[Year Demo]` product names and `YEAR-` references. Existing business records and the smaller `[Demo]` / `DEMO-` fixture are preserved. The completion marker and all new business records commit in one transaction. Concurrent invocations serialize on the marker; reruns skip the existing fixture, including after you edit its records, without resetting dates, passwords or stock. Namespace conflicts without a completion marker stop the run and roll back. To choose a fixed end date on a fresh database, use `cargo run --bin seed_year -- --end-date 2026-11-14`; a rerun always keeps its original range.
+
+Data includes seasonal daily multi-product sales, monthly multi-product purchase orders, linked and standalone purchase invoices, full/partial/unpaid/cancelled invoices, multi-invoice payments and payment installments. Split shipments and all delivery statuses are represented, along with current approval requests and cancellation/refund audit records. Historic shipments are delivered; draft/approved/in-transit examples are concentrated in the last three weeks. Products include active, inactive and no-recent-demand cases. Purchase stock becomes available only after full payment, using the same inventory and payment validation helpers as the application.
+
+Before committing, the seeder checks physical/available stock ledgers, document totals, invoice balances, payment allocations, purchase-order receiving balances, delivery/reservation quantities, payment eligibility for deliveries and paid purchase stock release. Run [backend/seeds/verify_year.sql](backend/seeds/verify_year.sql) for the same read-only reconciliation checks, monthly activity and the saved seed report. All eight violation counts should be zero. The ignored MySQL test also covers concurrent runs, reruns, daily coverage, statuses, preservation of existing records and namespace conflicts.
+
+The dashboard now defaults to the last twelve months. Monetary summaries and recent-transaction amounts use readable abbreviated labels (`Rp 10.1 million`, `Rp 2.4 billion`, `Rp 1.2 trillion`, and larger units); hover to see the exact rupiah value. Invoice, payment and other accounting detail pages keep full amounts.
+
+## List pagination and filters
+
+All business, forecast, role, user and approval list screens use `GET /api/lists/{resource}`. Resources: `products`, `purchase-orders`, `purchase-invoices`, `sales-invoices`, `documents`, `payments`, `delivery-orders`, `invoice-approvals`, `delivery-cancellations`, `roles`, `users`, `forecast`. Each resource requires its existing read permission. The original array endpoints remain available for compatibility and form lookups; dashboard totals still use the complete dataset.
+
+Query parameters:
+
+- `limit`: 1–100, default 25; UI choices are 25, 50 and 100.
+- `cursor`: opaque `next_cursor` or `start_cursor` from a previous response. Cursors belong to the user, resource and exact filters/page size; changing these starts a new traversal.
+- `q`: literal, case-insensitive substring search, up to 200 characters. Search covers relevant document numbers, names and descriptions rather than just the current page.
+- `from`, `to`: optional inclusive `YYYY-MM-DD` boundaries. Both the API and UI reject reversed ranges. The UI includes date presets, custom ranges, and a clear button.
+- `status`: applicable business/account/approval status; `kind` on payments (`sales_invoice` for customer receipts, `purchase_invoice` for supplier payments) or the combined documents endpoint.
+- `days`, `lead_time`: forecast settings, each 1–365.
+
+Responses contain `items`, `total`, `limit`, `has_more`, `next_cursor`, `start_cursor` and optional forecast `summary`. Records use date descending, then unique ID descending; cursors retain the initial maximum ID so later inserts cannot displace records during a traversal, including when returning to the first page. Existing records edited/deleted during navigation can still change results; refresh starts a new traversal. Filters reset to page one. No arbitrary column sorting is currently exposed. A future sort must use its own cursor ordering and ID tie-breaker, or offset pagination for that list.
+
+Business lists use the document/payment/delivery date. Approval date filters use the linked invoice date or delivery date, as labelled. Product, forecast, role and user filters use record creation date; existing roles/users receive the migration timestamp when creation tracking is added. Lists use the document's vertical scrollbar. Filters and column headings stick to the top of the page while scrolling through the list; wide tables retain horizontal scrolling with synchronized headings. Moving between pages returns to the list header. Payment lists show invoice counts with detail links. CSV exports on list pages export the displayed page.
+
+Approvals has separate sidebar and page submenus at `/approvals/?section=invoices` and `/approvals/?section=deliveries`. Requests display linked invoice numbers or generated delivery numbers (`DO-000001`) and requester/reviewer usernames. Delivery numbers are derived consistently from the existing immutable ID, without changing record relationships.
+
+The MySQL pagination integration test checks tied dates, complete traversal, insert isolation, returning to the initial snapshot, inclusive ranges, invalid cursors/filters, payment types, literal search, resource permissions and readable approval references.
+
+Browser regression checks: from `frontend`, run `npx playwright test tests/lists.e2e.ts --workers=1` (uses installed Google Chrome). These use API fixtures to check filter resets, pagination, sticky controls/headers, mobile width and approval submenu navigation. The real MySQL integration test covers the API queries and permissions.
+
+
+Delivery list rows use a labelled view icon and an overflow action menu. The menu keeps clear action names, highlights cancellation in red, preserves role/status checks, supports keyboard navigation and Escape, and closes when clicking outside. Finalized deliveries only show the view action. Native popovers keep menus visible outside the table's horizontal viewport.
+
+List layouts share full-width content gutters, compact 8px cell padding, continuous horizontal row separators and synchronized sticky headings. Products, forecasts, documents, payments, deliveries, approvals and role/user administration use the same icon actions; secondary actions remain labelled in the menu. Product descriptions truncate to one line in lists, and purchase-order reference badges use a compact second line. Browser regressions cover every list at desktop width, narrow viewport overflow/alignment, and approval/delivery action menus.

@@ -934,3 +934,264 @@ async fn auth_permissions_idempotency_and_delivery_workflow() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore = "Requires local MySQL create/drop-database permission"]
+async fn cursor_lists_filters_snapshot_and_approval_numbers() {
+    let url =
+        std::env::var("TEST_MYSQL_ADMIN_URL").unwrap_or("mysql://root@127.0.0.1:3306/mysql".into());
+    let admin = sqlx::MySqlPool::connect(&url).await.unwrap();
+    let name = format!(
+        "cursor_test_{}_{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_millis()
+    );
+    sqlx::query(&format!("CREATE DATABASE `{name}`"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let opts: sqlx::mysql::MySqlConnectOptions = url.parse().unwrap();
+    let db = sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(5)
+        .connect_with(opts.database(&name))
+        .await
+        .unwrap();
+    sqlx::migrate!().run(&db).await.unwrap();
+    crate::auth_seed::seed_auth(&db).await.unwrap();
+    let app = router(
+        App {
+            db: db.clone(),
+            http: reqwest::Client::new(),
+            meili: "http://localhost:7700".into(),
+            key: String::new(),
+        },
+        "http://localhost:5173".parse().unwrap(),
+    );
+    let admin_cookie = login(&app, "admin").await;
+    let staff = login(&app, "staff").await;
+    let staff_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE username='staff'")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let mut expected = Vec::new();
+    for i in 0..67 {
+        let day = if i < 60 {
+            "2026-11-10"
+        } else if i < 64 {
+            "2026-11-09"
+        } else {
+            "2026-11-11"
+        };
+        let id=sqlx::query("INSERT INTO documents(kind,number,date,person,grand_total,remaining_payment,status) VALUES('sales_invoice',?,?, 'Customer',100,100,'Unpaid')")
+          .bind(format!("CURSOR-SI-{i:03}")).bind(day).execute(&db).await.unwrap().last_insert_id() as i64;
+        expected.push((day.to_string(), id));
+    }
+    expected.sort_by(|a, b| b.cmp(a));
+    let (status, first, _) = call(
+        &app,
+        "/api/lists/sales-invoices?limit=7",
+        &admin_cookie,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["total"], 67);
+    assert_eq!(first["items"].as_array().unwrap().len(), 7);
+    let cursor = first["next_cursor"].as_str().unwrap().to_string();
+    // New backdated inserts must not enter an in-progress traversal.
+    sqlx::query("INSERT INTO documents(kind,number,date,person,grand_total,remaining_payment,status) VALUES('sales_invoice','AFTER-SNAPSHOT','2026-11-09','Customer',100,100,'Unpaid')").execute(&db).await.unwrap();
+    let (s, restored, _) = call(
+        &app,
+        &format!(
+            "/api/lists/sales-invoices?limit=7&cursor={}",
+            first["start_cursor"].as_str().unwrap()
+        ),
+        &admin_cookie,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(restored["total"], 67);
+    assert_eq!(restored["items"], first["items"]);
+    let mut rows = first["items"].as_array().unwrap().clone();
+    let mut next = Some(cursor.clone());
+    while let Some(c) = next {
+        let (status, page, _) = call(
+            &app,
+            &format!("/api/lists/sales-invoices?limit=7&cursor={c}"),
+            &admin_cookie,
+            None,
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["total"], 67);
+        rows.extend(page["items"].as_array().unwrap().clone());
+        next = page["next_cursor"].as_str().map(str::to_string);
+    }
+    assert_eq!(
+        rows.iter()
+            .map(|r| r["id"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        expected.iter().map(|r| r.1).collect::<Vec<_>>()
+    );
+    let (s, range, _) = call(
+        &app,
+        "/api/lists/sales-invoices?limit=100&from=2026-11-10&to=2026-11-10",
+        &admin_cookie,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(range["total"], 60);
+    assert!(
+        range["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["date"] == "2026-11-10")
+    );
+    for path in [
+        format!("/api/lists/sales-invoices?limit=7&status=Paid&cursor={cursor}"),
+        format!("/api/lists/purchase-invoices?limit=7&cursor={cursor}"),
+        "/api/lists/sales-invoices?cursor=zz".into(),
+        "/api/lists/sales-invoices?limit=101".into(),
+        "/api/lists/sales-invoices?from=2026-02-30".into(),
+        "/api/lists/sales-invoices?from=2026-11-12&to=2026-11-01".into(),
+        "/api/lists/payments?kind=purchase_order".into(),
+    ] {
+        assert_eq!(
+            call(&app, &path, &admin_cookie, None, "").await.0,
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
+    assert_eq!(
+        call(
+            &app,
+            &format!("/api/lists/sales-invoices?limit=7&cursor={cursor}"),
+            &staff,
+            None,
+            ""
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(&app, "/api/lists/users", &staff, None, "").await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(&app, "/api/lists/products", "", None, "").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    for (kind, reference) in [
+        ("sales_invoice", "RECEIPT-1"),
+        ("purchase_invoice", "SUPPLIER-1"),
+    ] {
+        sqlx::query(
+            "INSERT INTO payments(reference,date,amount,kind) VALUES(?,'2026-11-10',100,?)",
+        )
+        .bind(reference)
+        .bind(kind)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+    let (_, receipts, _) = call(
+        &app,
+        "/api/lists/payments?kind=sales_invoice&from=2026-11-10&to=2026-11-10",
+        &admin_cookie,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(receipts["total"], 1);
+    assert_eq!(receipts["items"][0]["reference"], "RECEIPT-1");
+    let (_, literal, _) = call(
+        &app,
+        "/api/lists/sales-invoices?q=%25",
+        &admin_cookie,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(literal["total"], 0);
+    let invoice = expected[0].1;
+    sqlx::query("INSERT INTO invoice_void_requests(invoice_id,requested_by,reason) VALUES(?,?,'Test request')").bind(invoice).bind(staff_id).execute(&db).await.unwrap();
+    let delivery=sqlx::query("INSERT INTO delivery_orders(sales_invoice_id,driver_name,date,address,note,cancellation_note,status,created_by) VALUES(?,'Driver','2026-11-10','Address','','','Draft',?)").bind(invoice).bind(staff_id).execute(&db).await.unwrap().last_insert_id();
+    sqlx::query("INSERT INTO delivery_cancellation_requests(delivery_order_id,requested_by,reason) VALUES(?,?,'Test cancellation')").bind(delivery).bind(staff_id).execute(&db).await.unwrap();
+    let (_, approvals, _) = call(
+        &app,
+        "/api/lists/invoice-approvals",
+        &admin_cookie,
+        None,
+        "",
+    )
+    .await;
+    assert!(
+        approvals["items"][0]["invoice_number"]
+            .as_str()
+            .unwrap()
+            .starts_with("CURSOR-SI-")
+    );
+    assert_eq!(approvals["items"][0]["requested_by"], "staff");
+    let (_, cancellations, _) = call(
+        &app,
+        "/api/lists/delivery-cancellations",
+        &admin_cookie,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(
+        cancellations["items"][0]["delivery_order_number"],
+        format!("DO-{delivery:06}")
+    );
+    sqlx::query("INSERT INTO products(name,description,quantity,remaining_quantity) VALUES('Product','',3,3)").execute(&db).await.unwrap();
+    for resource in [
+        "products",
+        "purchase-orders",
+        "purchase-invoices",
+        "documents",
+        "delivery-orders",
+        "roles",
+        "users",
+        "forecast",
+    ] {
+        let (s, body, _) = call(
+            &app,
+            &format!("/api/lists/{resource}?limit=1"),
+            &admin_cookie,
+            None,
+            "",
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{resource}: {body}");
+        assert!(body["items"].as_array().unwrap().len() <= 1);
+        if let Some(cursor) = body["next_cursor"].as_str() {
+            assert_eq!(
+                call(
+                    &app,
+                    &format!("/api/lists/{resource}?limit=1&cursor={cursor}"),
+                    &admin_cookie,
+                    None,
+                    ""
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
+        }
+    }
+    drop(app);
+    db.close().await;
+    sqlx::query(&format!("DROP DATABASE `{name}`"))
+        .execute(&admin)
+        .await
+        .unwrap();
+}

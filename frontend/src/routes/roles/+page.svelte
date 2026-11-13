@@ -1,5 +1,8 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { untrack } from 'svelte';
+	import CursorList from '../../lib/CursorList.svelte';
+	import RowActions from '../../lib/RowActions.svelte';
+	let refresh = $state(0);
 	import { page as route } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '../../lib/api';
@@ -71,13 +74,16 @@
 		}
 	});
 	async function load() {
+		refresh++;
 		try {
 			[data, users] = await Promise.all([api<typeof data>('/roles'), api<User[]>('/users')]);
 		} catch (e) {
 			error = (e as Error).message;
 		}
 	}
-	onMount(load);
+	$effect(() => {
+		if (section !== 'roles') untrack(() => void load());
+	});
 	async function create(e: SubmitEvent) {
 		e.preventDefault();
 		if (busy) return;
@@ -139,7 +145,10 @@
 </script>
 
 <svelte:head><title>Roles and permissions ? Stockroom</title></svelte:head>
-<main class="feature-page role-page">
+<main
+	class="feature-page role-page"
+	class:list-page={section === 'roles' || section === 'assignments'}
+>
 	<div class="page-heading">
 		<div>
 			<div class="eyebrow">WORKSPACE ADMINISTRATION</div>
@@ -162,7 +171,7 @@
 			{notice}
 		</p>{/if}
 	{#if section === 'roles'}
-		<section class="role-list-panel">
+		<div class="role-list-heading">
 			<header>
 				<div>
 					<h2>Workspace roles</h2>
@@ -170,33 +179,31 @@
 				</div>
 				<a class="button primary" href="/roles/?section=role-editor">Create role</a>
 			</header>
-			<div class="table-wrap">
-				<table>
-					<thead><tr><th>Role</th><th>Access</th><th>Actions</th></tr></thead><tbody
-						>{#each data.roles as role}<tr
-								><td
-									><strong>{role.name}</strong
-									>{#if ['Admin', 'Staff', 'Finance'].includes(role.name)}<span class="role-tag"
-											>Built-in</span
-										>{/if}</td
-								><td
-									><span class="permission-count">{role.permissions.length} permissions</span>
-									<div class="permission-tags">
-										{#each [...new Set(role.permissions.map((p) => p.split('.')[0]))] as group}<span
-												>{groupLabels[group] || group}</span
-											>{/each}
-									</div></td
-								><td
-									>{#if role.name !== 'Admin'}<a
-											class="button secondary"
-											href={`/roles/?section=role-editor&edit=${role.id}`}>Edit permissions</a
-										>{:else}<span class="muted">Full workspace access</span>{/if}</td
-								></tr
-							>{/each}</tbody
-					>
-				</table>
-			</div>
-		</section>
+		</div>
+		<CursorList
+			resource="roles"
+			title="Workspace roles"
+			dateLabel="Created date"
+			{refresh}
+			columns={[
+				{ key: 'name', label: 'Role' },
+				{
+					key: 'permissions',
+					label: 'Access',
+					format: (v) =>
+						`${v.length} permissions: ${[...new Set(v.map((p: string) => p.split('.')[0]))].join(', ')}`
+				},
+				{ key: 'date', label: 'Created' }
+			]}
+		>
+			{#snippet actions(role)}{#if role.name !== 'Admin'}<RowActions
+						href={`/roles/?section=role-editor&edit=${role.id}`}
+						label={role.name}
+						primaryIcon="edit"
+						primaryLabel={`Edit ${role.name} permissions`}
+						primaryTitle="Edit permissions"
+					/>{:else}<span class="muted">Protected</span>{/if}{/snippet}
+		</CursorList>
 	{:else if section === 'role-editor'}
 		<form onsubmit={create} class="role-editor">
 			<header>
@@ -232,7 +239,7 @@
 			</div>
 		</form>
 	{:else if section === 'assignments'}
-		<form onsubmit={assign} class="assignment-form">
+		<form id="assignment-form" onsubmit={assign} class="assignment-form">
 			<h2>Assign user role</h2>
 			<p>Choose a user and update their workspace access.</p>
 			<div class="fields">
@@ -262,20 +269,35 @@
 				>
 			</div>
 		</form>
-		<section class="role-list-panel">
-			<h2>Workspace users</h2>
-			<div class="table-wrap">
-				<table>
-					<thead><tr><th>Username</th><th>Role</th><th>Status</th></tr></thead><tbody
-						>{#each users as u}<tr
-								><td>{u.username}</td><td
-									>{data.roles.find((r) => r.id === u.role_id)?.name || '?'}</td
-								><td><span class="role-tag">{u.active ? 'Active' : 'Inactive'}</span></td></tr
-							>{/each}</tbody
-					>
-				</table>
-			</div>
-		</section>
+		<h2>Workspace users</h2>
+		<CursorList
+			resource="users"
+			title="Workspace users"
+			dateLabel="Created date"
+			{refresh}
+			statuses={['Active', 'Inactive']}
+			columns={[
+				{ key: 'username', label: 'Username' },
+				{ key: 'role_name', label: 'Role' },
+				{ key: 'status', label: 'Status', type: 'badge' },
+				{ key: 'date', label: 'Created' }
+			]}
+		>
+			{#snippet actions(u)}<RowActions
+					label={u.username}
+					items={[
+						{
+							label: 'Manage access',
+							icon: 'edit',
+							run: () => {
+								userId = u.id;
+								selectUser();
+								document.getElementById('assignment-form')?.scrollIntoView({ block: 'start' });
+							}
+						}
+					]}
+				/>{/snippet}
+		</CursorList>
 	{:else}
 		<form onsubmit={createUser}>
 			<h2>Create user</h2>

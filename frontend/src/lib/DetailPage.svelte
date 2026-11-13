@@ -39,7 +39,7 @@
 				? data?.payment.reference
 				: category === 'product'
 					? data?.product.name
-					: `Delivery #${id}`
+					: `DO-${String(id).padStart(6, '0')}`
 	);
 	let recordType = $derived(
 		category === 'document'

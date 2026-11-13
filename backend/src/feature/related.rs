@@ -65,7 +65,7 @@ pub(crate) async fn document(
     Ok(Json(data))
 }
 fn delivery_json(r: &sqlx::mysql::MySqlRow) -> Value {
-    json!({"id":r.get::<i64,_>("id"),"driver_name":r.get::<String,_>("driver_name"),"date":r.get::<String,_>("date"),"status":r.get::<String,_>("status")})
+    json!({"number":format!("DO-{:06}",r.get::<i64,_>("id")),"id":r.get::<i64,_>("id"),"driver_name":r.get::<String,_>("driver_name"),"date":r.get::<String,_>("date"),"status":r.get::<String,_>("status")})
 }
 pub(crate) async fn payment(
     State(a): State<App>,

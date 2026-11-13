@@ -1,0 +1,10 @@
+ALTER TABLE roles ADD COLUMN created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE users ADD COLUMN created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+CREATE INDEX idx_roles_created_id ON roles(created_at,id);
+CREATE INDEX idx_users_created_id ON users(created_at,id);
+CREATE INDEX idx_products_created_id ON products(created_at,id);
+CREATE INDEX idx_documents_date_id ON documents(date,id);
+CREATE INDEX idx_documents_kind_date_id ON documents(kind,date,id);
+CREATE INDEX idx_payments_date_id ON payments(date,id);
+CREATE INDEX idx_payments_kind_date_id ON payments(kind,date,id);
+CREATE INDEX idx_delivery_date_id ON delivery_orders(date,id);

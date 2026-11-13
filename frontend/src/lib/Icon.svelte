@@ -1,6 +1,9 @@
 <script lang="ts">
 	let { name, size = 19 }: { name: string; size?: number } = $props();
 	const paths: Record<string, string> = {
+		eye: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12 M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
+		more: 'M5 12h.01 M12 12h.01 M19 12h.01',
+		edit: 'M16 3l5 5-12 12-6 1 1-6z M14 5l5 5',
 		dashboard: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
 		forecast: 'M3 17l6-6 4 3 8-10 M15 4h6v6 M3 21h18',
 		products: 'M3 7l9-5 9 5v10l-9 5-9-5z M3 7l9 5 9-5 M12 12v10 M7 4l10 5',

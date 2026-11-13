@@ -28,6 +28,10 @@ pub(crate) async fn health(State(a): State<App>) -> Json<Value> {
 pub(crate) fn router(app: App, origin: axum::http::HeaderValue) -> Router {
     Router::new()
         .route(
+            "/api/lists/{resource}",
+            get(crate::feature::pagination::list),
+        )
+        .route(
             "/api/delivery-orders/{id}/cancel-request",
             post(crate::feature::delivery::request_cancel),
         )

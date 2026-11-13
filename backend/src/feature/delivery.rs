@@ -55,7 +55,7 @@ pub(crate) async fn list(State(a): State<App>) -> Result<Json<Value>> {
     Ok(Json(json!(rows.iter().map(order_json).collect::<Vec<_>>())))
 }
 fn order_json(r: &sqlx::mysql::MySqlRow) -> Value {
-    json!({"id":r.get::<i64,_>("id"),"sales_invoice_id":r.get::<i64,_>("sales_invoice_id"),"driver_name":r.get::<String,_>("driver_name"),"date":r.get::<String,_>("date"),"address":r.get::<String,_>("address"),"note":r.get::<String,_>("note"),"cancellation_note":r.get::<String,_>("cancellation_note"),"status":r.get::<String,_>("status"),"created_by":r.get::<i64,_>("created_by"),"approved_by":r.get::<Option<i64>,_>("approved_by")})
+    json!({"number":format!("DO-{:06}",r.get::<i64,_>("id")),"id":r.get::<i64,_>("id"),"sales_invoice_id":r.get::<i64,_>("sales_invoice_id"),"driver_name":r.get::<String,_>("driver_name"),"date":r.get::<String,_>("date"),"address":r.get::<String,_>("address"),"note":r.get::<String,_>("note"),"cancellation_note":r.get::<String,_>("cancellation_note"),"status":r.get::<String,_>("status"),"created_by":r.get::<i64,_>("created_by"),"approved_by":r.get::<Option<i64>,_>("approved_by")})
 }
 pub(crate) async fn detail(State(a): State<App>, Path(id): Path<i64>) -> Result<Json<Value>> {
     let r=sqlx::query("SELECT id,sales_invoice_id,driver_name,CAST(date AS CHAR) date,address,note,cancellation_note,status,created_by,approved_by FROM delivery_orders WHERE id=?").bind(id).fetch_optional(&a.db).await?.ok_or_else(||bad("Delivery order not found"))?;
