@@ -27,10 +27,87 @@ pub(crate) async fn health(State(a): State<App>) -> Json<Value> {
 }
 pub(crate) fn router(app: App, origin: axum::http::HeaderValue) -> Router {
     Router::new()
+        .route(
+            "/api/delivery-orders/{id}/cancel-request",
+            post(crate::feature::delivery::request_cancel),
+        )
+        .route(
+            "/api/delivery-cancellation-requests",
+            get(crate::feature::delivery::cancellation_requests),
+        )
+        .route(
+            "/api/delivery-cancellation-requests/{id}/approve",
+            post(crate::feature::delivery::approve_cancel),
+        )
+        .route(
+            "/api/delivery-cancellation-requests/{id}/reject",
+            post(crate::feature::delivery::reject_cancel),
+        )
+        .route("/api/auth/login", post(crate::feature::auth::login))
+        .route("/api/auth/refresh", post(crate::feature::auth::refresh))
+        .route("/api/auth/logout", post(crate::feature::auth::logout))
+        .route(
+            "/api/auth/logout-all",
+            post(crate::feature::auth::logout_all),
+        )
+        .route("/api/auth/me", get(crate::feature::auth::me))
+        .route(
+            "/api/auth/password",
+            post(crate::feature::auth::change_password),
+        )
+        .route(
+            "/api/roles",
+            get(crate::feature::auth::roles).post(crate::feature::auth::save_role),
+        )
+        .route(
+            "/api/users",
+            get(crate::feature::auth::users).post(crate::feature::auth::create_user),
+        )
+        .route("/api/roles/{id}", post(crate::feature::auth::update_role))
+        .route(
+            "/api/users/{id}/role",
+            post(crate::feature::auth::user_role),
+        )
+        .route(
+            "/api/invoices/{id}",
+            post(crate::feature::invoice_admin::update),
+        )
+        .route(
+            "/api/invoices/{id}/cancel",
+            post(crate::feature::invoice_admin::request_void),
+        )
+        .route(
+            "/api/void-requests",
+            get(crate::feature::invoice_admin::requests),
+        )
+        .route(
+            "/api/void-requests/{id}/approve",
+            post(crate::feature::invoice_admin::approve),
+        )
+        .route(
+            "/api/void-requests/{id}/reject",
+            post(crate::feature::invoice_admin::reject),
+        )
+        .route(
+            "/api/delivery-orders",
+            get(crate::feature::delivery::list).post(crate::feature::delivery::create),
+        )
+        .route(
+            "/api/delivery-orders/{id}",
+            get(crate::feature::delivery::detail).post(crate::feature::delivery::update),
+        )
+        .route(
+            "/api/delivery-orders/{id}/approve",
+            post(crate::feature::delivery::approve),
+        )
+        .route(
+            "/api/delivery-orders/{id}/status",
+            post(crate::feature::delivery::status),
+        )
         .route("/api/health", get(health))
         .route(
             "/api/sales-invoices/{id}/cancel",
-            post(crate::feature::sale_invoice::controller::cancel),
+            post(crate::feature::invoice_admin::request_void),
         )
         .route(
             "/api/purchase-orders",
@@ -58,11 +135,19 @@ pub(crate) fn router(app: App, origin: axum::http::HeaderValue) -> Router {
         .fallback_service(tower_http::services::ServeDir::new(
             env::var("STATIC_DIR").unwrap_or("../frontend/build".into()),
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            crate::feature::auth::guard,
+        ))
         .layer(
             CorsLayer::new()
                 .allow_origin(origin)
                 .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-                .allow_headers([axum::http::header::CONTENT_TYPE]),
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderName::from_static("idempotency-key"),
+                ])
+                .allow_credentials(true),
         )
         .with_state(app)
 }

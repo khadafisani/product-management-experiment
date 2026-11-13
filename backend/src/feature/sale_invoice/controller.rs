@@ -11,10 +11,3 @@ pub(crate) async fn create(
 pub(crate) async fn list(State(a): State<App>) -> Result<Json<Vec<Document>>> {
     Ok(Json(super::service::list(a).await?))
 }
-pub(crate) async fn cancel(
-    State(a): State<App>,
-    axum::extract::Path(id): axum::extract::Path<i64>,
-    Json(input): Json<super::entity::CancelInput>,
-) -> Result<Json<Value>> {
-    Ok(Json(super::service::cancel(a, id, input).await?))
-}

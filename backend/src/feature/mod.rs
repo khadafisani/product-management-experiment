@@ -1,5 +1,8 @@
+pub(crate) mod auth;
+pub(crate) mod delivery;
 pub(crate) mod document;
 pub(crate) mod forecast;
+pub(crate) mod invoice_admin;
 pub(crate) mod payment;
 pub(crate) mod product;
 pub(crate) mod purchase_invoice;

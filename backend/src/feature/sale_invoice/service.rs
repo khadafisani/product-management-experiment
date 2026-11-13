@@ -12,6 +12,7 @@ pub(crate) async fn list(a: App) -> Result<Vec<Document>> {
         .filter(|d| d.kind == "sales_invoice")
         .collect())
 }
+#[cfg(test)]
 pub(crate) async fn cancel(a: App, id: i64, input: super::entity::CancelInput) -> Result<Value> {
     super::validation::validate_cancellation(&input.reason)?;
     let mut tx = a.db.begin().await?;
@@ -34,6 +35,17 @@ pub(crate) async fn cancel(a: App, id: i64, input: super::entity::CancelInput) -
         return Ok(
             serde_json::json!({"id":id,"status":"Cancelled","refund_due":refund_due,"already_cancelled":true}),
         );
+    }
+    let deliveries: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM delivery_orders WHERE sales_invoice_id=? AND status<>'Cancelled'",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if deliveries > 0 {
+        return Err(crate::helper::bad(
+            "Cancel delivery orders before cancelling invoice",
+        ));
     }
     let lines: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT product_id,quantity FROM document_lines WHERE document_id=? ORDER BY product_id",

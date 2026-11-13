@@ -66,6 +66,17 @@ pub(crate) async fn refresh_status(
     tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
     po: i64,
 ) -> Result<()> {
-    sqlx::query("UPDATE documents SET status=CASE WHEN EXISTS(SELECT 1 FROM document_lines WHERE document_id=? AND realized_quantity<0) THEN 'Warning' WHEN NOT EXISTS(SELECT 1 FROM document_lines WHERE document_id=? AND realized_quantity<>0) THEN 'Complete' ELSE 'Partial' END WHERE id=?").bind(po).bind(po).bind(po).execute(&mut **tx).await?;
+    sqlx::query("UPDATE documents SET status=CASE WHEN EXISTS(SELECT 1 FROM document_lines WHERE document_id=? AND realized_quantity<0) THEN 'Warning' WHEN NOT EXISTS(SELECT 1 FROM document_lines WHERE document_id=? AND realized_quantity<>0) THEN 'Complete' WHEN NOT EXISTS(SELECT 1 FROM document_lines WHERE document_id=? AND realized_quantity<>quantity) THEN 'Open' ELSE 'Partial' END WHERE id=?").bind(po).bind(po).bind(po).bind(po).execute(&mut **tx).await?;
+    Ok(())
+}
+
+// Reverse realization when an invoice is edited or voided, retaining line status.
+pub(crate) async fn restore_line(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    po: i64,
+    product: i64,
+    quantity: i64,
+) -> Result<()> {
+    sqlx::query("UPDATE document_lines SET realized_quantity=realized_quantity+?,status=CASE WHEN realized_quantity<0 THEN 'Warning' WHEN realized_quantity=0 THEN 'Complete' WHEN realized_quantity=quantity THEN 'Open' ELSE 'Partial' END WHERE document_id=? AND product_id=?").bind(quantity).bind(po).bind(product).execute(&mut **tx).await?;
     Ok(())
 }

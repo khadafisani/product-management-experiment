@@ -15,7 +15,7 @@ pub(crate) async fn detail(a: App, id: i64) -> Result<Value> {
     let doc = doc.ok_or_else(|| bad("Document not found"))?;
     let lines: Vec<Line> = sqlx
         ::query_as(
-            "SELECT id,product_id,item_name,quantity,realized_quantity,price,subtotal,status FROM document_lines WHERE document_id=? ORDER BY id"
+            "SELECT id,product_id,item_name,quantity,realized_quantity,delivered_quantity,on_delivery_quantity,price,subtotal,status FROM document_lines WHERE document_id=? ORDER BY id"
         )
         .bind(id)
         .fetch_all(&a.db).await?;
@@ -31,8 +31,10 @@ pub(crate) async fn detail(a: App, id: i64) -> Result<Value> {
         .fetch_all(&a.db).await?;
     let cancellation = sqlx
         ::query(
-            "SELECT reason,refund_due,CAST(cancelled_at AS CHAR) cancelled_at FROM sales_invoice_cancellations WHERE sales_invoice_id=?"
+            "SELECT reason,refund_due,CAST(created_at AS CHAR) cancelled_at FROM invoice_voids WHERE invoice_id=? UNION ALL SELECT reason,refund_due,CAST(cancelled_at AS CHAR) cancelled_at FROM sales_invoice_cancellations WHERE sales_invoice_id=? AND NOT EXISTS (SELECT 1 FROM invoice_voids WHERE invoice_id=?)"
         )
+        .bind(id)
+        .bind(id)
         .bind(id)
         .fetch_optional(&a.db).await?
         .map(

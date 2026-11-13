@@ -7,6 +7,7 @@ pub(crate) fn validate(d: &DocumentInput) -> Result<()> {
     crate::feature::document::validation::validate_document(d)?;
     Ok(())
 }
+#[cfg(test)]
 pub(crate) fn validate_cancellation(reason: &str) -> Result<()> {
     if reason.trim().is_empty() || reason.chars().count() > 500 {
         return Err(bad(

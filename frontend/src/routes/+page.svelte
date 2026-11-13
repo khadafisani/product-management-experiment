@@ -1,6 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page as route } from '$app/state';
+	import { goto } from '$app/navigation';
+	import { workspaceConnection, workspaceLowStock } from '../lib/auth';
 	import Icon from '../lib/Icon.svelte';
+	import { user } from '../lib/auth';
 	import {
 		api,
 		money,
@@ -12,7 +16,7 @@
 		type Forecast,
 		type Line
 	} from '../lib/api';
-	let page = $state('Dashboard');
+	let page = $derived(route.url.searchParams.get('view') || 'Dashboard');
 	function focusModal(node: HTMLDialogElement) {
 		node.showModal();
 		return {
@@ -21,25 +25,6 @@
 			}
 		};
 	}
-	const nav = [
-		{
-			title: 'OVERVIEW',
-			items: [
-				['Dashboard', 'dashboard'],
-				['Stock forecast', 'forecast']
-			]
-		},
-		{
-			title: 'WORKSPACE',
-			items: [
-				['Products', 'products'],
-				['Purchase orders', 'order'],
-				['Purchase invoices', 'invoice'],
-				['Payments', 'payment'],
-				['Sales invoices', 'sale']
-			]
-		}
-	];
 	const kinds: Record<string, string> = {
 		'Purchase orders': 'purchase_order',
 		'Purchase invoices': 'purchase_invoice',
@@ -57,6 +42,28 @@
 		status = $state('All statuses'),
 		busy = $state(false);
 	let cancellationReason = $state('');
+	let editingInvoice = $state({
+		number: '',
+		date: '',
+		person: '',
+		editLines: false,
+		lines: [] as { product_id: number; item_name: string; quantity: number; price: number }[]
+	});
+	function editInvoice() {
+		editingInvoice = {
+			number: viewed.document.number,
+			date: viewed.document.date,
+			person: viewed.document.person,
+			editLines: false,
+			lines: viewed.lines.map((l: any) => ({
+				product_id: l.product_id,
+				item_name: l.item_name,
+				quantity: l.quantity,
+				price: l.price
+			}))
+		};
+		modal = 'edit-invoice';
+	}
 
 	let period = $state('6'),
 		horizon = $state(30),
@@ -210,9 +217,30 @@
 			loading = false;
 		}
 	}
-	onMount(load);
+	onMount(() => {
+		void load();
+		const refresh = () => {
+			void load();
+		};
+		const reset = () => {
+			query = '';
+			status = 'All statuses';
+			searchIds = null;
+			error = '';
+		};
+		window.addEventListener('workspace-refresh', refresh);
+		window.addEventListener('workspace-navigate', reset);
+		return () => {
+			window.removeEventListener('workspace-refresh', refresh);
+			window.removeEventListener('workspace-navigate', reset);
+		};
+	});
+	$effect(() => {
+		workspaceConnection.set(connected);
+		workspaceLowStock.set(lowStock.length);
+	});
 	function navigate(next: string) {
-		page = next;
+		void goto(next === 'Dashboard' ? '/' : `/?view=${encodeURIComponent(next)}`);
 		query = '';
 		status = 'All statuses';
 		searchIds = null;
@@ -223,6 +251,10 @@
 		setTimeout(() => (notice = ''), 5000);
 	}
 	function openProduct(p?: Product) {
+		if (!$user?.permissions.includes('products.write')) {
+			flash('Your role does not have permission for this action.');
+			return;
+		}
 		purchaseReview = null;
 		product = p
 			? { ...p }
@@ -241,6 +273,10 @@
 		error = '';
 	}
 	function openDocument() {
+		if (!$user?.permissions.includes('invoices.write')) {
+			flash('Your role does not have permission for this action.');
+			return;
+		}
 		purchaseReview = null;
 		draft = {
 			kind: kinds[page] || 'purchase_order',
@@ -259,6 +295,7 @@
 		const prediction = forecasts.find((f) => f.id === p.id);
 		navigate('Purchase invoices');
 		openDocument();
+		draft.kind = 'purchase_invoice';
 		draft.number = `PINV-${today().replaceAll('-', '')}-${Date.now().toString().slice(-6)}`;
 		draft.lines = [
 			{
@@ -274,6 +311,10 @@
 		];
 	}
 	function openPayment() {
+		if (!$user?.permissions.includes('payments.write')) {
+			flash('Your role does not have permission for this action.');
+			return;
+		}
 		purchaseReview = null;
 		payment = {
 			reference: '',
@@ -291,6 +332,7 @@
 		else openDocument();
 	}
 	async function syncSearch() {
+		if (!$user?.permissions.includes('search.manage')) return;
 		try {
 			await api('/search/reindex', {});
 			flash('Search indexing queued. Results update shortly.');
@@ -299,11 +341,34 @@
 		}
 	}
 	async function save(confirmed = false) {
+		if (busy) return;
+		let successMessage = 'Saved successfully';
 		busy = true;
 		error = '';
 		try {
-			if (modal === 'cancel') {
-				await api(`/sales-invoices/${viewed.document.id}/cancel`, { reason: cancellationReason });
+			if (modal === 'edit-invoice') {
+				await api(`/invoices/${viewed.document.id}`, {
+					number: editingInvoice.number,
+					date: editingInvoice.date,
+					person: editingInvoice.person,
+					...(editingInvoice.editLines
+						? {
+								lines: editingInvoice.lines.map((l) => ({
+									product_id: l.product_id,
+									quantity: l.quantity,
+									price: l.price
+								}))
+							}
+						: {})
+				});
+			} else if (modal === 'cancel') {
+				const result = await api<{ status: string }>(`/invoices/${viewed.document.id}/cancel`, {
+					reason: cancellationReason
+				});
+				successMessage =
+					result.status === 'Pending'
+						? 'Void request sent to Finance for approval.'
+						: 'Invoice voided.';
 			} else if (modal === 'product') await api('/products', product);
 			else if (modal === 'document') {
 				const payload =
@@ -332,7 +397,7 @@
 			} else await api('/payments', payment);
 			modal = '';
 			await load();
-			flash('Saved successfully');
+			flash(successMessage);
 			void syncSearch();
 		} catch (e) {
 			error = (e as Error).message;
@@ -452,549 +517,481 @@
 		content="Stockroom product management: purchasing, inventory, sales, payments and stock forecasts."
 	/></svelte:head
 >
-<div class="app-shell">
-	<aside class="sidebar">
-		<a class="brand" href="/" aria-label="Stockroom home"
-			><span class="brand-icon"><Icon name="products" size={23} /></span> stockroom<span
-				class="brand-dot">.</span
-			></a
-		>
-		<div class="workspace">
-			<div class="workspace-icon">S</div>
-			<div><strong>My workspace</strong><small>Business workspace</small></div>
-			<span class="workspace-chevron">&#8964;</span>
+<main>
+	<div class="page-heading">
+		<div>
+			<div class="eyebrow">YOUR BUSINESS, IN FOCUS</div>
+			<h1>{page === 'Dashboard' ? 'Business overview' : page}</h1>
+			<p>{descriptions[page]}</p>
 		</div>
-		{#each nav as group}<div class="nav-group">
-				<p>{group.title}</p>
-				{#each group.items as [title, icon]}<button
-						class:active={page === title}
-						onclick={() => navigate(title)}
-						><span class="nav-icon"><Icon name={icon} /></span
-						>{title}{#if title === 'Products' && lowStock.length}<span class="nav-count"
-								>{lowStock.length}</span
-							>{/if}</button
-					>{/each}
-			</div>{/each}
-		<div class="sidebar-bottom">
-			<div class="tip">
-				<span><Icon name="spark" size={28} /></span><strong
-					>A little foresight goes a long way.</strong
-				>
-				<p>Know what to restock before your shelves run empty.</p>
-				<button onclick={() => navigate('Stock forecast')}
-					>Explore forecast <span><Icon name="arrow" size={16} /></span></button
-				>
-			</div>
-			<div class="profile">
-				<div class="avatar">MW</div>
-				<div><strong>My workspace</strong><small>Local workspace</small></div>
-				<span class="online-dot"></span>
-			</div>
+		<div class="heading-actions">
+			<button class="button secondary" onclick={exportCsv}
+				><Icon name="export" size={15} /> Export</button
+			><button
+				class="button primary"
+				onclick={page === 'Dashboard' || page === 'Stock forecast'
+					? () => {
+							navigate('Purchase orders');
+							openDocument();
+						}
+					: create}
+				><span>+</span>{page === 'Dashboard' || page === 'Stock forecast'
+					? 'Create order'
+					: page === 'Products'
+						? 'Add product'
+						: page === 'Payments'
+							? 'Record payment'
+							: 'Create ' + (page === 'Purchase orders' ? 'order' : 'invoice')}</button
+			>
 		</div>
-	</aside>
-	<div class="main-shell">
-		<header class="topbar">
-			<div class="breadcrumb">Workspace <span>/</span> <strong>{page}</strong></div>
-			<div class="top-actions">
-				<span class="connection" class:offline={!connected}
-					><i></i>{connected ? 'Live workspace' : 'API offline'}</span
-				><button
-					class="icon-button"
-					aria-label="Refresh workspace"
-					onclick={load}
-					disabled={loading}><Icon name="refresh" /></button
-				>
-				<div class="avatar small">MW</div>
-			</div>
-		</header>
-		<main>
-			<div class="page-heading">
-				<div>
-					<div class="eyebrow">YOUR BUSINESS, IN FOCUS</div>
-					<h1>{page === 'Dashboard' ? 'Business overview' : page}</h1>
-					<p>{descriptions[page]}</p>
-				</div>
-				<div class="heading-actions">
-					<button class="button secondary" onclick={exportCsv}
-						><Icon name="export" size={15} /> Export</button
-					><button
-						class="button primary"
-						onclick={page === 'Dashboard' || page === 'Stock forecast'
-							? () => {
-									navigate('Purchase orders');
-									openDocument();
-								}
-							: create}
-						><span>+</span>{page === 'Dashboard' || page === 'Stock forecast'
-							? 'Create order'
-							: page === 'Products'
-								? 'Add product'
-								: page === 'Payments'
-									? 'Record payment'
-									: 'Create ' + (page === 'Purchase orders' ? 'order' : 'invoice')}</button
+	</div>
+	{#if error && !modal}<div class="alert" role="alert">
+			{error}<button onclick={load}>Retry connection &#8635;</button>
+		</div>{/if}
+	{#if notice}<div class="toast" role="status">&#10003; {notice}</div>{/if}
+	{#if loading}<div class="loading" role="status">Loading your workspace…</div>{/if}
+	{#if page === 'Dashboard'}
+		<div class="stats-grid">
+			{#each [{ label: 'Total sales', value: money(salesTotal), icon: 'up', note: `${sales.length} customer invoices`, color: 'green' }, { label: 'Total purchases', value: money(purchaseTotal), icon: 'down', note: `${purchases.length} supplier invoices`, color: 'blue' }, { label: 'Outstanding payables', value: money(payable), icon: 'clock', note: `${purchases.filter((d) => d.remaining_payment > 0).length} invoices awaiting payment`, color: 'orange' }, { label: 'Products in stock', value: compact(products.reduce((s, p) => s + p.remaining_quantity, 0)), icon: 'products', note: `${products.length} products in your catalog`, color: 'purple' }] as stat}
+				<section class="stat-card">
+					<div class="stat-title">
+						{stat.label}<span class="stat-icon {stat.color}"><Icon name={stat.icon} /></span>
+					</div>
+					<div class="stat-value">{stat.value}</div>
+					<p>{stat.note}</p>
+				</section>{/each}
+		</div>
+		<div class="chart-grid">
+			<section class="panel revenue-panel">
+				<div class="panel-heading">
+					<div>
+						<h2>Cash flow overview</h2>
+						<p>Sales, purchases, and supplier payments</p>
+					</div>
+					<select aria-label="Chart period" bind:value={period}
+						><option value="6">Last 6 months</option><option value="12">Last 12 months</option
+						></select
 					>
 				</div>
-			</div>
-			{#if error && !modal}<div class="alert" role="alert">
-					{error}<button onclick={load}>Retry connection &#8635;</button>
-				</div>{/if}
-			{#if notice}<div class="toast" role="status">&#10003; {notice}</div>{/if}
-			{#if loading}<div class="loading" role="status">Loading your workspace…</div>{/if}
-			{#if page === 'Dashboard'}
-				<div class="stats-grid">
-					{#each [{ label: 'Total sales', value: money(salesTotal), icon: 'up', note: `${sales.length} customer invoices`, color: 'green' }, { label: 'Total purchases', value: money(purchaseTotal), icon: 'down', note: `${purchases.length} supplier invoices`, color: 'blue' }, { label: 'Outstanding payables', value: money(payable), icon: 'clock', note: `${purchases.filter((d) => d.remaining_payment > 0).length} invoices awaiting payment`, color: 'orange' }, { label: 'Products in stock', value: compact(products.reduce((s, p) => s + p.remaining_quantity, 0)), icon: 'products', note: `${products.length} products in your catalog`, color: 'purple' }] as stat}
-						<section class="stat-card">
-							<div class="stat-title">
-								{stat.label}<span class="stat-icon {stat.color}"><Icon name={stat.icon} /></span>
-							</div>
-							<div class="stat-value">{stat.value}</div>
-							<p>{stat.note}</p>
-						</section>{/each}
+				<div class="legend">
+					<span><i class="sales-dot"></i>Sales</span><span
+						><i class="purchase-dot"></i>Purchases</span
+					><span><i class="payment-dot"></i>Payments</span>
 				</div>
-				<div class="chart-grid">
-					<section class="panel revenue-panel">
-						<div class="panel-heading">
-							<div>
-								<h2>Cash flow overview</h2>
-								<p>Sales, purchases, and supplier payments</p>
-							</div>
-							<select aria-label="Chart period" bind:value={period}
-								><option value="6">Last 6 months</option><option value="12">Last 12 months</option
-								></select
-							>
+				<div class="bar-chart">
+					<div class="y-axis">
+						{#each [1, 0.75, 0.5, 0.25, 0] as fraction}<span
+								>{chartMax === 1 ? '0' : compact(chartMax * fraction)}</span
+							>{/each}
+					</div>
+					<div class="plot">
+						<div class="grid-lines">
+							{#each [1, 2, 3, 4, 5] as _}<i></i>{/each}
 						</div>
-						<div class="legend">
-							<span><i class="sales-dot"></i>Sales</span><span
-								><i class="purchase-dot"></i>Purchases</span
-							><span><i class="payment-dot"></i>Payments</span>
+						<div class="bar-groups">
+							{#each months as m}<div class="month-group">
+									<div class="bars">
+										<div
+											class="bar sales-bar"
+											style:height={`${(m.sales / chartMax) * 100}%`}
+											title={`${m.name} sales: ${money(m.sales)}`}
+										></div>
+										<div
+											class="bar purchase-bar"
+											style:height={`${(m.purchases / chartMax) * 100}%`}
+											title={`${m.name} purchases: ${money(m.purchases)}`}
+										></div>
+										<div
+											class="bar payment-bar"
+											style:height={`${(m.payments / chartMax) * 100}%`}
+											title={`${m.name} payments: ${money(m.payments)}`}
+										></div>
+									</div>
+									<span>{m.name}</span>
+								</div>{/each}
 						</div>
-						<div class="bar-chart">
-							<div class="y-axis">
-								{#each [1, 0.75, 0.5, 0.25, 0] as fraction}<span
-										>{chartMax === 1 ? '0' : compact(chartMax * fraction)}</span
-									>{/each}
-							</div>
-							<div class="plot">
-								<div class="grid-lines">
-									{#each [1, 2, 3, 4, 5] as _}<i></i>{/each}
-								</div>
-								<div class="bar-groups">
-									{#each months as m}<div class="month-group">
-											<div class="bars">
-												<div
-													class="bar sales-bar"
-													style:height={`${(m.sales / chartMax) * 100}%`}
-													title={`${m.name} sales: ${money(m.sales)}`}
-												></div>
-												<div
-													class="bar purchase-bar"
-													style:height={`${(m.purchases / chartMax) * 100}%`}
-													title={`${m.name} purchases: ${money(m.purchases)}`}
-												></div>
-												<div
-													class="bar payment-bar"
-													style:height={`${(m.payments / chartMax) * 100}%`}
-													title={`${m.name} payments: ${money(m.payments)}`}
-												></div>
-											</div>
-											<span>{m.name}</span>
-										</div>{/each}
-								</div>
-								{#if documents.length === 0}<div class="chart-empty">
-										Your cash flow story starts with your first invoice.
-									</div>{/if}
-							</div>
-						</div>
-						<div class="chart-footer">
-							<span><span class="tiny-dot"></span> Based on recorded transactions</span><strong
-								>IDR</strong
-							>
-						</div>
-					</section>
-					<section class="panel stock-panel">
-						<div class="panel-heading">
-							<div>
-								<h2>Inventory health</h2>
-								<p>A pulse check on your stock</p>
-							</div>
-							<span><Icon name="arrow" size={16} /></span>
-						</div>
-						<div
-							class="donut"
-							class:empty-inventory={activeProducts.length === 0}
-							style={`--healthy:${activeProducts.length ? ((activeProducts.length - lowStock.length) / activeProducts.length) * 100 : 0}%;--low:${activeProducts.length ? ((activeProducts.length - lowStock.filter((p) => p.remaining_quantity === 0).length) / activeProducts.length) * 100 : 0}%`}
-						>
-							<div><strong>{activeProducts.length}</strong><span>Active products</span></div>
-						</div>
-						<div class="health-legend">
-							<div>
-								<span><i class="sales-dot"></i>Healthy stock</span><strong
-									>{activeProducts.length - lowStock.length}</strong
-								>
-							</div>
-							<div>
-								<span><i class="orange-dot"></i>Low stock</span><strong
-									>{lowStock.filter((p) => p.remaining_quantity > 0).length}</strong
-								>
-							</div>
-							<div>
-								<span><i class="red-dot"></i>Out of stock</span><strong
-									>{lowStock.filter((p) => p.remaining_quantity === 0).length}</strong
-								>
-							</div>
-						</div>
-						<button class="text-link" onclick={() => navigate('Products')}
-							>View inventory <span><Icon name="arrow" size={16} /></span></button
-						>
-					</section>
+						{#if documents.length === 0}<div class="chart-empty">
+								Your cash flow story starts with your first invoice.
+							</div>{/if}
+					</div>
 				</div>
-				<div class="bottom-grid">
-					<section class="panel">
-						<div class="panel-heading">
-							<div>
-								<h2>Recent transactions</h2>
-								<p>The latest activity in your workspace</p>
-							</div>
-							<button class="text-link" onclick={() => navigate('Purchase invoices')}
-								>View all &#8594;</button
-							>
-						</div>
-						<div class="table-wrap">
-							<table>
-								<thead
-									><tr><th>TRANSACTION</th><th>TYPE</th><th>AMOUNT</th><th>STATUS</th></tr></thead
-								><tbody
-									>{#each documents.slice(0, 5) as d}<tr
-											><td
-												><button class="record-link" onclick={() => view(d)}>{d.number}</button
-												><small>{d.person} · {d.date}</small></td
-											><td>{d.kind.replaceAll('_', ' ')}</td><td class="amount"
-												>{money(d.grand_total)}</td
-											><td><span class="badge {badge(d.status)}">{d.status}</span></td></tr
-										>{:else}<tr
-											><td colspan="4" class="empty-cell"
-												><span><Icon name="arrow" size={16} /></span><strong
-													>No transactions yet</strong
-												>
-												<p>Create an order or invoice to get started.</p></td
-											></tr
-										>{/each}</tbody
-								>
-							</table>
-						</div>
-					</section>
-					<section class="panel attention">
-						<div class="panel-heading">
-							<div>
-								<h2>
-									<span class="attention-icon"><Icon name="flag" size={15} /></span> Needs attention
-								</h2>
-								<p>A few things to keep on your radar</p>
-							</div>
-							<span class="count-pill"
-								>{lowStock.length + documents.filter((d) => d.status === 'Warning').length}</span
-							>
-						</div>
-						{#each lowStock.slice(0, 3) as p}<button
-								class="attention-row"
-								onclick={() => {
-									navigate('Products');
-									openProduct(p);
-								}}
-								><span class="product-letter">{p.name[0]}</span><span
-									><strong>{p.name}</strong><small
-										>{p.remaining_quantity} available units · Reorder at {p.reorder_level}</small
-									></span
-								><span><Icon name="arrow" size={16} /></span></button
-							>
-							<div class="attention-action">
-								<button
-									class="text-link"
-									aria-label={`Create purchase invoice for ${p.name}`}
-									onclick={() => replenish(p)}>+ Create purchase invoice</button
-								>
-							</div>{:else}<div class="all-clear">
-								<span><Icon name="check" /></span><strong>Looking good</strong>
-								<p>No stock alerts at the moment.</p>
-							</div>{/each}{#if documents.some((d) => d.status === 'Warning')}<button
-								class="warning-link"
-								onclick={() => {
-									navigate('Purchase orders');
-									status = 'Warning';
-								}}>Review PO quantity discrepancies &#8594;</button
-							>{/if}<button class="forecast-link" onclick={() => navigate('Stock forecast')}
-							><span
-								><Icon name="spark" size={14} /> <strong>Plan your next move</strong><small
-									>Explore your stock forecast</small
-								></span
-							><span><Icon name="arrow" size={16} /></span></button
-						>
-					</section>
+				<div class="chart-footer">
+					<span><span class="tiny-dot"></span> Based on recorded transactions</span><strong
+						>IDR</strong
+					>
 				</div>
-				<div class="dashboard-note">
-					Receivables <strong>{money(receivable)}</strong><span>·</span> All amounts in Indonesian
-					Rupiah <span>·</span> Updated from your workspace
-				</div>
-			{:else if page === 'Stock forecast'}
-				<section class="forecast-banner">
-					<div class="forecast-spark"><Icon name="spark" size={40} /></div>
+			</section>
+			<section class="panel stock-panel">
+				<div class="panel-heading">
 					<div>
-						<h2>Stay one step ahead of demand.</h2>
-						<p>A 30-day sales average estimates stock coverage and recommended replenishment.</p>
+						<h2>Inventory health</h2>
+						<p>A pulse check on your stock</p>
 					</div>
-					<div class="forecast-controls">
-						<label
-							>Forecast horizon<select bind:value={horizon} onchange={updateForecast}
-								><option value={7}>7 days</option><option value={30}>30 days</option><option
-									value={60}>60 days</option
-								><option value={90}>90 days</option></select
-							></label
-						><label
-							>Supplier lead time<input
-								type="number"
-								min="1"
-								max="365"
-								bind:value={lead}
-								onchange={updateForecast}
-							/></label
+					<span><Icon name="arrow" size={16} /></span>
+				</div>
+				<div
+					class="donut"
+					class:empty-inventory={activeProducts.length === 0}
+					style={`--healthy:${activeProducts.length ? ((activeProducts.length - lowStock.length) / activeProducts.length) * 100 : 0}%;--low:${activeProducts.length ? ((activeProducts.length - lowStock.filter((p) => p.remaining_quantity === 0).length) / activeProducts.length) * 100 : 0}%`}
+				>
+					<div><strong>{activeProducts.length}</strong><span>Active products</span></div>
+				</div>
+				<div class="health-legend">
+					<div>
+						<span><i class="sales-dot"></i>Healthy stock</span><strong
+							>{activeProducts.length - lowStock.length}</strong
 						>
 					</div>
-				</section>
-				<div class="stats-grid three">
-					<section class="stat-card">
-						<div class="stat-title">
-							Needs replenishment <span><Icon name="arrow" size={16} /></span>
-						</div>
-						<div class="stat-value">{forecasts.filter((f) => f.risk !== 'Healthy').length}</div>
-						<p>Products at risk or below reorder level</p>
-					</section>
-					<section class="stat-card">
-						<div class="stat-title">
-							Suggested order <span><Icon name="arrow" size={16} /></span>
-						</div>
-						<div class="stat-value">
-							{compact(forecasts.reduce((s, f) => s + f.suggested_order, 0))} <small>units</small>
-						</div>
-						<p>To cover horizon, lead time, and buffer</p>
-					</section>
-					<section class="stat-card">
-						<div class="stat-title">
-							Forecast window <span><Icon name="arrow" size={16} /></span>
-						</div>
-						<div class="stat-value">{horizon} <small>days</small></div>
-						<p>Based on the last 30 calendar days</p>
-					</section>
+					<div>
+						<span><i class="orange-dot"></i>Low stock</span><strong
+							>{lowStock.filter((p) => p.remaining_quantity > 0).length}</strong
+						>
+					</div>
+					<div>
+						<span><i class="red-dot"></i>Out of stock</span><strong
+							>{lowStock.filter((p) => p.remaining_quantity === 0).length}</strong
+						>
+					</div>
 				</div>
-				<section class="panel">
-					<div class="panel-heading">
-						<div>
-							<h2>Stock outlook</h2>
-							<p>Projected stock can go below zero to show unmet demand.</p>
-						</div>
+				<button class="text-link" onclick={() => navigate('Products')}
+					>View inventory <span><Icon name="arrow" size={16} /></span></button
+				>
+			</section>
+		</div>
+		<div class="bottom-grid">
+			<section class="panel">
+				<div class="panel-heading">
+					<div>
+						<h2>Recent transactions</h2>
+						<p>The latest activity in your workspace</p>
 					</div>
-					<div class="table-wrap">
-						<table>
-							<thead
-								><tr
-									><th>PRODUCT</th><th>REMAINING QTY</th><th>DAILY SALES</th><th>COVERAGE</th><th
-										>PROJECTED STOCK</th
-									><th>ORDER SUGGESTION</th><th>STATUS</th><th>ACTION</th></tr
-								></thead
-							><tbody
-								>{#each forecasts as f}<tr
-										><td><strong>{f.name}</strong></td><td>{f.quantity}</td><td
-											>{f.daily_sales.toFixed(2)}</td
-										><td
-											>{f.days_remaining === null
-												? 'No recent sales'
-												: f.days_remaining.toFixed(1) + ' days'}</td
-										><td class:negative={f.projected_stock < 0}>{f.projected_stock.toFixed(0)}</td
-										><td><strong>{f.suggested_order} units</strong></td><td
-											><span class="badge {badge(f.risk)}">{f.risk}</span></td
-										><td
-											>{#if f.risk !== 'Healthy'}<button
-													class="button secondary replenish-button"
-													aria-label={`Create purchase invoice for ${f.name}`}
-													onclick={() => replenish(f, f.suggested_order)}>+ Purchase invoice</button
-												>{/if}</td
-										></tr
-									>{:else}<tr
-										><td colspan="8" class="empty-cell"
-											><span><Icon name="arrow" size={16} /></span><strong
-												>Your forecast starts here</strong
-											>
-											<p>Add products and record sales to see demand estimates.</p></td
-										></tr
-									>{/each}</tbody
-							>
-						</table>
+					<button class="text-link" onclick={() => navigate('Purchase invoices')}
+						>View all &#8594;</button
+					>
+				</div>
+				<div class="table-wrap">
+					<table>
+						<thead><tr><th>TRANSACTION</th><th>TYPE</th><th>AMOUNT</th><th>STATUS</th></tr></thead
+						><tbody
+							>{#each documents.slice(0, 5) as d}<tr
+									><td
+										><button class="record-link" onclick={() => view(d)}>{d.number}</button><small
+											>{d.person} · {d.date}</small
+										></td
+									><td>{d.kind.replaceAll('_', ' ')}</td><td class="amount"
+										>{money(d.grand_total)}</td
+									><td><span class="badge {badge(d.status)}">{d.status}</span></td></tr
+								>{:else}<tr
+									><td colspan="4" class="empty-cell"
+										><span><Icon name="arrow" size={16} /></span><strong>No transactions yet</strong
+										>
+										<p>Create an order or invoice to get started.</p></td
+									></tr
+								>{/each}</tbody
+						>
+					</table>
+				</div>
+			</section>
+			<section class="panel attention">
+				<div class="panel-heading">
+					<div>
+						<h2>
+							<span class="attention-icon"><Icon name="flag" size={15} /></span> Needs attention
+						</h2>
+						<p>A few things to keep on your radar</p>
 					</div>
-				</section>
-				<p class="method-note">
-					Method: daily demand = units sold in the last 30 days ÷ 30. Suggested order = demand ×
-					(horizon + lead time) + reorder buffer - current stock, rounded up. Estimates assume
-					steady demand and exclude incoming POs.
-				</p>
-			{:else}
-				<section class="panel records">
-					<div class="records-toolbar">
-						<div class="tabs">
-							<button class="selected" onclick={() => (status = 'All statuses')}
-								>All {page.toLowerCase()}
-								<span
-									>{page === 'Products'
-										? products.length
-										: page === 'Payments'
-											? payments.length
-											: documents.filter((d) => d.kind === kinds[page]).length}</span
-								></button
-							>
-						</div>
-						<div class="filters">
-							<label class="search-field"
-								><span><Icon name="search" size={16} /></span><input
-									aria-label="Search records"
-									placeholder={`Search ${page.toLowerCase()}...`}
-									bind:value={query}
-									oninput={page === 'Products' ? searchProducts : () => {}}
-								/></label
-							>{#if page !== 'Payments'}<select aria-label="Filter by status" bind:value={status}
-									><option>All statuses</option
-									>{#each page === 'Products' ? ['Active', 'Inactive'] : page === 'Purchase orders' ? ['Open', 'Partial', 'Complete', 'Warning'] : ['Unpaid', 'Partial Paid', 'Paid', ...(page === 'Sales invoices' ? ['Cancelled'] : [])] as s}<option
-											>{s}</option
-										>{/each}</select
-								>{/if}{#if page === 'Products'}<button
-									class="icon-button"
-									title="Rebuild search index"
-									onclick={syncSearch}><Icon name="refresh" /></button
-								>{/if}
-						</div>
-					</div>
-					<div class="table-wrap">
-						<table>
-							<thead
-								>{#if page === 'Products'}<tr
-										><th>PRODUCT</th><th>PHYSICAL STOCK</th><th>REMAINING QTY</th><th>UNIT PRICE</th
-										><th>REORDER LEVEL</th><th>STATUS</th><th></th></tr
-									>{:else if page === 'Payments'}<tr
-										><th>REFERENCE</th><th>DATE</th><th>TYPE</th><th>INVOICES</th><th>AMOUNT</th
-										></tr
-									>{:else}<tr
-										><th>{page === 'Purchase orders' ? 'ORDER' : 'INVOICE'} NUMBER</th><th
-											>{page === 'Sales invoices' ? 'CUSTOMER' : 'PERSON IN CHARGE'}</th
-										><th>DATE</th><th>GRAND TOTAL</th>{#if page !== 'Purchase orders'}<th
-												>OUTSTANDING</th
-											>{/if}<th>STATUS</th><th></th></tr
-									>{/if}</thead
-							><tbody>
-								{#if page === 'Products'}{#each filteredProducts as p}<tr
-											><td
-												><div class="product-cell">
-													{#if p.photo}<img src={p.photo} alt="" />{:else}<span
-															class="product-letter">{p.name.slice(0, 2).toUpperCase()}</span
-														>{/if}
-													<div>
-														<strong>{p.name}</strong><small
-															>{p.description || 'No description'}</small
-														>
-													</div>
-												</div></td
-											><td
-												><strong class:negative={p.remaining_quantity <= p.reorder_level}
-													>{p.quantity}</strong
-												>
-												<span class="muted">units</span
-												>{#if p.remaining_quantity <= p.reorder_level}<span class="stock-alert"
-														>Low stock</span
-													>{/if}</td
-											><td
-												><strong class:negative={p.remaining_quantity <= p.reorder_level}
-													>{p.remaining_quantity}</strong
-												> <span class="muted">available</span></td
-											><td>{money(p.price)}</td><td>{p.reorder_level} units</td><td
-												><span class="badge {badge(p.status)}">{p.status}</span></td
-											><td
-												><button class="text-link" onclick={() => openProduct(p)}
-													>Edit &#8599;</button
-												>{#if p.status === 'Active' && (p.remaining_quantity <= p.reorder_level || forecasts.some((f) => f.id === p.id && f.risk !== 'Healthy'))}<button
-														class="button secondary replenish-button"
-														aria-label={`Create purchase invoice for ${p.name}`}
-														onclick={() => replenish(p)}>+ Purchase invoice</button
-													>{/if}</td
-											></tr
-										>{:else}<tr
-											><td colspan="7" class="empty-cell"
-												><span><Icon name="arrow" size={16} /></span><strong
-													>{query
-														? 'No matching products'
-														: 'Make room for your first product'}</strong
-												>
-												<p>Add products to start managing your inventory.</p>
-												<button class="button primary" onclick={() => openProduct()}
-													>+ Add product</button
-												></td
-											></tr
-										>{/each}
-								{:else if page === 'Payments'}{#each filteredPayments as p}<tr
-											><td><strong>{p.reference}</strong></td><td>{p.date}</td><td
-												>{p.kind === 'sales_invoice' ? 'Customer receipt' : 'Supplier payment'}</td
-											><td>{p.invoices}</td><td class="amount">{money(p.amount)}</td></tr
-										>{:else}<tr
-											><td colspan="5" class="empty-cell"
-												><span><Icon name="arrow" size={16} /></span><strong
-													>No payments found</strong
-												>
-												<p>Record a payment against one or more outstanding invoices.</p></td
-											></tr
-										>{/each}
-								{:else}{#each filteredDocs as d}<tr
-											><td
-												><button class="record-link" onclick={() => view(d)}>{d.number}</button
-												>{#if d.purchase_order_id}<small>Linked to PO #{d.purchase_order_id}</small
-													>{/if}</td
-											><td>{d.person}</td><td>{d.date}</td><td class="amount"
-												>{money(d.grand_total)}</td
-											>{#if page !== 'Purchase orders'}<td>{money(d.remaining_payment)}</td>{/if}<td
-												><span class="badge {badge(d.status)}">{d.status}</span></td
-											><td
-												><button class="text-link" onclick={() => view(d)}>View &#8599;</button></td
-											></tr
-										>{:else}<tr
-											><td colspan="7" class="empty-cell"
-												><span><Icon name="arrow" size={16} /></span><strong
-													>{query || status !== 'All statuses'
-														? 'No matching records'
-														: 'A fresh start for your ' + page.toLowerCase()}</strong
-												>
-												<p>Create your first record to bring your workspace to life.</p>
-												<button class="button primary" onclick={openDocument}
-													>+ Create {page === 'Purchase orders' ? 'order' : 'invoice'}</button
-												></td
-											></tr
-										>{/each}{/if}</tbody
-							>
-						</table>
-					</div>
-					<div class="table-footer">
+					<span class="count-pill"
+						>{lowStock.length + documents.filter((d) => d.status === 'Warning').length}</span
+					>
+				</div>
+				{#each lowStock.slice(0, 3) as p}<button
+						class="attention-row"
+						onclick={() => {
+							navigate('Products');
+							openProduct(p);
+						}}
+						><span class="product-letter">{p.name[0]}</span><span
+							><strong>{p.name}</strong><small
+								>{p.remaining_quantity} available units · Reorder at {p.reorder_level}</small
+							></span
+						><span><Icon name="arrow" size={16} /></span></button
+					>
+					<div class="attention-action">
+						<button
+							class="text-link"
+							aria-label={`Create purchase invoice for ${p.name}`}
+							onclick={() => replenish(p)}>+ Create purchase invoice</button
+						>
+					</div>{:else}<div class="all-clear">
+						<span><Icon name="check" /></span><strong>Looking good</strong>
+						<p>No stock alerts at the moment.</p>
+					</div>{/each}{#if documents.some((d) => d.status === 'Warning')}<button
+						class="warning-link"
+						onclick={() => {
+							navigate('Purchase orders');
+							status = 'Warning';
+						}}>Review PO quantity discrepancies &#8594;</button
+					>{/if}<button class="forecast-link" onclick={() => navigate('Stock forecast')}
+					><span
+						><Icon name="spark" size={14} /> <strong>Plan your next move</strong><small
+							>Explore your stock forecast</small
+						></span
+					><span><Icon name="arrow" size={16} /></span></button
+				>
+			</section>
+		</div>
+		<div class="dashboard-note">
+			Receivables <strong>{money(receivable)}</strong><span>·</span> All amounts in Indonesian
+			Rupiah <span>·</span> Updated from your workspace
+		</div>
+	{:else if page === 'Stock forecast'}
+		<section class="forecast-banner">
+			<div class="forecast-spark"><Icon name="spark" size={40} /></div>
+			<div>
+				<h2>Stay one step ahead of demand.</h2>
+				<p>A 30-day sales average estimates stock coverage and recommended replenishment.</p>
+			</div>
+			<div class="forecast-controls">
+				<label
+					>Forecast horizon<select bind:value={horizon} onchange={updateForecast}
+						><option value={7}>7 days</option><option value={30}>30 days</option><option value={60}
+							>60 days</option
+						><option value={90}>90 days</option></select
+					></label
+				><label
+					>Supplier lead time<input
+						type="number"
+						min="1"
+						max="365"
+						bind:value={lead}
+						onchange={updateForecast}
+					/></label
+				>
+			</div>
+		</section>
+		<div class="stats-grid three">
+			<section class="stat-card">
+				<div class="stat-title">
+					Needs replenishment <span><Icon name="arrow" size={16} /></span>
+				</div>
+				<div class="stat-value">{forecasts.filter((f) => f.risk !== 'Healthy').length}</div>
+				<p>Products at risk or below reorder level</p>
+			</section>
+			<section class="stat-card">
+				<div class="stat-title">
+					Suggested order <span><Icon name="arrow" size={16} /></span>
+				</div>
+				<div class="stat-value">
+					{compact(forecasts.reduce((s, f) => s + f.suggested_order, 0))} <small>units</small>
+				</div>
+				<p>To cover horizon, lead time, and buffer</p>
+			</section>
+			<section class="stat-card">
+				<div class="stat-title">
+					Forecast window <span><Icon name="arrow" size={16} /></span>
+				</div>
+				<div class="stat-value">{horizon} <small>days</small></div>
+				<p>Based on the last 30 calendar days</p>
+			</section>
+		</div>
+		<section class="panel">
+			<div class="panel-heading">
+				<div>
+					<h2>Stock outlook</h2>
+					<p>Projected stock can go below zero to show unmet demand.</p>
+				</div>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead
+						><tr
+							><th>PRODUCT</th><th>REMAINING QTY</th><th>DAILY SALES</th><th>COVERAGE</th><th
+								>PROJECTED STOCK</th
+							><th>ORDER SUGGESTION</th><th>STATUS</th><th>ACTION</th></tr
+						></thead
+					><tbody
+						>{#each forecasts as f}<tr
+								><td><strong>{f.name}</strong></td><td>{f.quantity}</td><td
+									>{f.daily_sales.toFixed(2)}</td
+								><td
+									>{f.days_remaining === null
+										? 'No recent sales'
+										: f.days_remaining.toFixed(1) + ' days'}</td
+								><td class:negative={f.projected_stock < 0}>{f.projected_stock.toFixed(0)}</td><td
+									><strong>{f.suggested_order} units</strong></td
+								><td><span class="badge {badge(f.risk)}">{f.risk}</span></td><td
+									>{#if f.risk !== 'Healthy'}<button
+											class="button secondary replenish-button"
+											aria-label={`Create purchase invoice for ${f.name}`}
+											onclick={() => replenish(f, f.suggested_order)}>+ Purchase invoice</button
+										>{/if}</td
+								></tr
+							>{:else}<tr
+								><td colspan="8" class="empty-cell"
+									><span><Icon name="arrow" size={16} /></span><strong
+										>Your forecast starts here</strong
+									>
+									<p>Add products and record sales to see demand estimates.</p></td
+								></tr
+							>{/each}</tbody
+					>
+				</table>
+			</div>
+		</section>
+		<p class="method-note">
+			Method: daily demand = units sold in the last 30 days ÷ 30. Suggested order = demand ×
+			(horizon + lead time) + reorder buffer - current stock, rounded up. Estimates assume steady
+			demand and exclude incoming POs.
+		</p>
+	{:else}
+		<section class="panel records">
+			<div class="records-toolbar">
+				<div class="tabs">
+					<button class="selected" onclick={() => (status = 'All statuses')}
+						>All {page.toLowerCase()}
 						<span
 							>{page === 'Products'
-								? filteredProducts.length
+								? products.length
 								: page === 'Payments'
-									? filteredPayments.length
-									: filteredDocs.length} records</span
-						><span>All amounts in IDR</span>
-					</div>
-				</section>
-			{/if}
-			<footer class="main-footer">
+									? payments.length
+									: documents.filter((d) => d.kind === kinds[page]).length}</span
+						></button
+					>
+				</div>
+				<div class="filters">
+					<label class="search-field"
+						><span><Icon name="search" size={16} /></span><input
+							aria-label="Search records"
+							placeholder={`Search ${page.toLowerCase()}...`}
+							bind:value={query}
+							oninput={page === 'Products' ? searchProducts : () => {}}
+						/></label
+					>{#if page !== 'Payments'}<select aria-label="Filter by status" bind:value={status}
+							><option>All statuses</option
+							>{#each page === 'Products' ? ['Active', 'Inactive'] : page === 'Purchase orders' ? ['Open', 'Partial', 'Complete', 'Warning'] : ['Unpaid', 'Partial Paid', 'Paid', ...(page === 'Sales invoices' ? ['Cancelled'] : [])] as s}<option
+									>{s}</option
+								>{/each}</select
+						>{/if}{#if page === 'Products'}<button
+							class="icon-button"
+							title="Rebuild search index"
+							onclick={syncSearch}><Icon name="refresh" /></button
+						>{/if}
+				</div>
+			</div>
+			<div class="table-wrap">
+				<table>
+					<thead
+						>{#if page === 'Products'}<tr
+								><th>PRODUCT</th><th>PHYSICAL STOCK</th><th>REMAINING QTY</th><th>UNIT PRICE</th><th
+									>REORDER LEVEL</th
+								><th>STATUS</th><th></th></tr
+							>{:else if page === 'Payments'}<tr
+								><th>REFERENCE</th><th>DATE</th><th>TYPE</th><th>INVOICES</th><th>AMOUNT</th></tr
+							>{:else}<tr
+								><th>{page === 'Purchase orders' ? 'ORDER' : 'INVOICE'} NUMBER</th><th
+									>{page === 'Sales invoices' ? 'CUSTOMER' : 'PERSON IN CHARGE'}</th
+								><th>DATE</th><th>GRAND TOTAL</th>{#if page !== 'Purchase orders'}<th
+										>OUTSTANDING</th
+									>{/if}<th>STATUS</th><th></th></tr
+							>{/if}</thead
+					><tbody>
+						{#if page === 'Products'}{#each filteredProducts as p}<tr
+									><td
+										><div class="product-cell">
+											{#if p.photo}<img src={p.photo} alt="" />{:else}<span class="product-letter"
+													>{p.name.slice(0, 2).toUpperCase()}</span
+												>{/if}
+											<div>
+												<strong>{p.name}</strong><small>{p.description || 'No description'}</small>
+											</div>
+										</div></td
+									><td
+										><strong class:negative={p.remaining_quantity <= p.reorder_level}
+											>{p.quantity}</strong
+										>
+										<span class="muted">units</span
+										>{#if p.remaining_quantity <= p.reorder_level}<span class="stock-alert"
+												>Low stock</span
+											>{/if}</td
+									><td
+										><strong class:negative={p.remaining_quantity <= p.reorder_level}
+											>{p.remaining_quantity}</strong
+										> <span class="muted">available</span></td
+									><td>{money(p.price)}</td><td>{p.reorder_level} units</td><td
+										><span class="badge {badge(p.status)}">{p.status}</span></td
+									><td
+										><button class="text-link" onclick={() => openProduct(p)}>Edit &#8599;</button
+										>{#if p.status === 'Active' && (p.remaining_quantity <= p.reorder_level || forecasts.some((f) => f.id === p.id && f.risk !== 'Healthy'))}<button
+												class="button secondary replenish-button"
+												aria-label={`Create purchase invoice for ${p.name}`}
+												onclick={() => replenish(p)}>+ Purchase invoice</button
+											>{/if}</td
+									></tr
+								>{:else}<tr
+									><td colspan="7" class="empty-cell"
+										><span><Icon name="arrow" size={16} /></span><strong
+											>{query ? 'No matching products' : 'Make room for your first product'}</strong
+										>
+										<p>Add products to start managing your inventory.</p>
+										<button class="button primary" onclick={() => openProduct()}
+											>+ Add product</button
+										></td
+									></tr
+								>{/each}
+						{:else if page === 'Payments'}{#each filteredPayments as p}<tr
+									><td><strong>{p.reference}</strong></td><td>{p.date}</td><td
+										>{p.kind === 'sales_invoice' ? 'Customer receipt' : 'Supplier payment'}</td
+									><td>{p.invoices}</td><td class="amount">{money(p.amount)}</td></tr
+								>{:else}<tr
+									><td colspan="5" class="empty-cell"
+										><span><Icon name="arrow" size={16} /></span><strong>No payments found</strong>
+										<p>Record a payment against one or more outstanding invoices.</p></td
+									></tr
+								>{/each}
+						{:else}{#each filteredDocs as d}<tr
+									><td
+										><button class="record-link" onclick={() => view(d)}>{d.number}</button
+										>{#if d.purchase_order_id}<small>Linked to PO #{d.purchase_order_id}</small
+											>{/if}</td
+									><td>{d.person}</td><td>{d.date}</td><td class="amount">{money(d.grand_total)}</td
+									>{#if page !== 'Purchase orders'}<td>{money(d.remaining_payment)}</td>{/if}<td
+										><span class="badge {badge(d.status)}">{d.status}</span></td
+									><td><button class="text-link" onclick={() => view(d)}>View &#8599;</button></td
+									></tr
+								>{:else}<tr
+									><td colspan="7" class="empty-cell"
+										><span><Icon name="arrow" size={16} /></span><strong
+											>{query || status !== 'All statuses'
+												? 'No matching records'
+												: 'A fresh start for your ' + page.toLowerCase()}</strong
+										>
+										<p>Create your first record to bring your workspace to life.</p>
+										<button class="button primary" onclick={openDocument}
+											>+ Create {page === 'Purchase orders' ? 'order' : 'invoice'}</button
+										></td
+									></tr
+								>{/each}{/if}</tbody
+					>
+				</table>
+			</div>
+			<div class="table-footer">
 				<span
-					><span class="brand-mini"><Icon name="products" size={13} /></span> A little more clarity. A
-					lot more control.</span
-				><span>Stockroom · Product management</span>
-			</footer>
-		</main>
-	</div>
-</div>
+					>{page === 'Products'
+						? filteredProducts.length
+						: page === 'Payments'
+							? filteredPayments.length
+							: filteredDocs.length} records</span
+				><span>All amounts in IDR</span>
+			</div>
+		</section>
+	{/if}
+	<footer class="main-footer">
+		<span
+			><span class="brand-mini"><Icon name="products" size={13} /></span> A little more clarity. A lot
+			more control.</span
+		><span>Stockroom · Product management</span>
+	</footer>
+</main>
 {#if modal}
 	<div class="modal-backdrop" role="presentation">
 		<dialog
@@ -1031,7 +1028,7 @@
 								: modal === 'payment'
 									? 'Record payment'
 									: modal === 'cancel'
-										? 'Cancel sales invoice'
+										? 'Void invoice'
 										: viewed?.document.number}
 					</h2>
 				</div>
@@ -1061,6 +1058,8 @@
 							><tr
 								><th>ITEM</th><th>QUANTITY</th><th>PRICE</th
 								>{#if viewed.document.kind === 'purchase_order'}<th>REMAINING QTY</th><th>STATUS</th
+									>{/if}{#if viewed.document.kind === 'sales_invoice'}<th>ON DELIVERY</th><th
+										>DELIVERED</th
 									>{/if}<th>SUBTOTAL</th></tr
 							></thead
 						><tbody
@@ -1068,7 +1067,9 @@
 									><td>{l.item_name}</td><td>{l.quantity}</td><td>{money(l.price)}</td
 									>{#if viewed.document.kind === 'purchase_order'}<td>{l.realized_quantity}</td><td
 											><span class="badge {badge(l.status)}">{l.status}</span></td
-										>{/if}<td>{money(l.subtotal)}</td></tr
+										>{/if}{#if viewed.document.kind === 'sales_invoice'}<td
+											>{l.on_delivery_quantity}</td
+										><td>{l.delivered_quantity}</td>{/if}<td>{money(l.subtotal)}</td></tr
 								>{/each}</tbody
 						>
 					</table>
@@ -1093,7 +1094,11 @@
 						<p>{viewed.cancellation.reason}</p>
 						<p>Refund due: <strong>{money(viewed.cancellation.refund_due)}</strong></p>
 					</div>{/if}
-				{#if viewed.document.kind === 'sales_invoice' && viewed.document.status !== 'Cancelled'}<div
+				{#if viewed.document.kind !== 'purchase_order' && viewed.document.status !== 'Cancelled' && $user?.permissions.includes('invoices.write')}<button
+						class="button secondary"
+						onclick={editInvoice}>Edit invoice</button
+					>{/if}
+				{#if viewed.document.kind !== 'purchase_order' && viewed.document.status !== 'Cancelled' && $user?.permissions.includes('invoices.request_void')}<div
 						class="modal-actions"
 					>
 						<button
@@ -1111,7 +1116,48 @@
 						void save(!!purchaseReview);
 					}}
 				>
-					{#if modal === 'cancel'}<section class="cancellation-preview">
+					{#if modal === 'edit-invoice'}<section>
+							<h3>Edit {viewed.document.number}</h3>
+							<label
+								>Invoice number<input
+									bind:value={editingInvoice.number}
+									required
+									maxlength="100"
+								/></label
+							><label>Date<input type="date" bind:value={editingInvoice.date} required /></label
+							><label
+								>Customer / supplier<input
+									bind:value={editingInvoice.person}
+									required
+									maxlength="200"
+								/></label
+							>
+							{#if viewed.payments.length === 0}<label
+									><input type="checkbox" bind:checked={editingInvoice.editLines} /> Edit quantities and
+									prices</label
+								>
+								<p>Line edits are allowed before any payments or delivery orders exist.</p>{/if}
+							{#if editingInvoice.editLines}{#each editingInvoice.lines as l}<fieldset>
+										<legend>{l.item_name}</legend><label
+											>Quantity<input
+												type="number"
+												min="1"
+												step="1"
+												bind:value={l.quantity}
+												required
+											/></label
+										><label
+											>Price<input
+												type="number"
+												min="1"
+												step="1"
+												bind:value={l.price}
+												required
+											/></label
+										>
+									</fieldset>{/each}{/if}
+						</section>
+					{:else if modal === 'cancel'}<section class="cancellation-preview">
 							<h3>Cancel {viewed.document.number}?</h3>
 							<p>
 								This restores {viewed.total_quantity} units to physical and remaining stock, closes the
@@ -1438,7 +1484,9 @@
 										? 'Record payment'
 										: modal === 'cancel'
 											? 'Confirm cancellation'
-											: 'Save product'}</button
+											: modal === 'edit-invoice'
+												? 'Save invoice'
+												: 'Save product'}</button
 						>
 					</div>
 				</form>{/if}

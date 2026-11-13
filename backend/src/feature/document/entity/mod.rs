@@ -37,6 +37,8 @@ pub(crate) struct Line {
     pub(crate) item_name: String,
     pub(crate) quantity: i64,
     pub(crate) realized_quantity: i64,
+    pub(crate) delivered_quantity: i64,
+    pub(crate) on_delivery_quantity: i64,
     pub(crate) price: i64,
     pub(crate) subtotal: i64,
     pub(crate) status: String,

@@ -1,10 +1,11 @@
 mod database;
-mod router;
+pub(crate) mod router;
 mod state;
 pub(crate) use state::App;
 use std::env;
 pub async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
+    crate::feature::auth::validate_config()?;
     let db = database::connect().await?;
     let app = App {
         db,
@@ -17,6 +18,16 @@ pub async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
             .into(),
         key: env::var("MEILI_KEY").unwrap_or_default(),
     };
+    let cleanup_app = app.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            interval.tick().await;
+            if let Err(e) = crate::feature::auth::cleanup(&cleanup_app).await {
+                eprintln!("Auth cleanup: {}", e.1);
+            }
+        }
+    });
     let sync_app = app.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));

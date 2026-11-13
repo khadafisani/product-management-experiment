@@ -57,3 +57,7 @@ mod tests {
         assert!(total(&[new_line(" ")]).is_err());
     }
 }
+pub mod auth_seed;
+
+#[cfg(test)]
+mod auth_delivery_tests;

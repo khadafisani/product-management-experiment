@@ -47,15 +47,46 @@ export type Line = {
 	subtotal?: number;
 	status?: string;
 };
+let refreshing: Promise<boolean> | null = null;
+const pendingKeys = new Map<string, string>();
 export async function api<T>(path: string, body?: unknown): Promise<T> {
-	const response = await fetch(`/api${path}`, {
-		method: body === undefined ? 'GET' : 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		...(body === undefined ? {} : { body: JSON.stringify(body) })
-	});
-	const data = await response.json().catch(() => ({
-		error: 'The API is unavailable. Start the Rust backend and check its database configuration.'
-	}));
+	const serialized = body === undefined ? undefined : JSON.stringify(body);
+	const fingerprint = path + ':' + serialized;
+	const mutation = body !== undefined && !path.startsWith('/auth/') && !path.endsWith('/preview');
+	let key = pendingKeys.get(fingerprint);
+	if (mutation && !key) {
+		key = crypto.randomUUID();
+		pendingKeys.set(fingerprint, key);
+	}
+	const request = () =>
+		fetch(`/api${path}`, {
+			method: body === undefined ? 'GET' : 'POST',
+			credentials: 'include',
+			headers: { 'Content-Type': 'application/json', ...(key ? { 'Idempotency-Key': key } : {}) },
+			...(serialized === undefined ? {} : { body: serialized })
+		});
+	let response = await request();
+	if (response.status === 401 && !path.startsWith('/auth/')) {
+		if (!refreshing)
+			refreshing = fetch('/api/auth/refresh', {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+				body: '{}'
+			})
+				.then((r) => r.ok)
+				.finally(() => {
+					refreshing = null;
+				});
+		if (await refreshing) response = await request();
+		else {
+			if (typeof window !== 'undefined') window.dispatchEvent(new Event('auth-expired'));
+		}
+	}
+	const data = await response.json().catch(() => ({ error: 'The API is unavailable.' }));
+	// Keep the key after network failures, pending responses and server errors.
+	if (mutation && response.status < 500 && response.status !== 409 && response.status !== 401)
+		pendingKeys.delete(fingerprint);
 	if (!response.ok) throw new Error(data.error || 'Request failed');
 	return data;
 }

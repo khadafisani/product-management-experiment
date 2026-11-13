@@ -35,7 +35,7 @@ cargo build --release
 
 Open http://127.0.0.1:3000. The release server serves the compiled Svelte app and API together; a Node server is not required. Run from `backend` so `.env` and the default `../frontend/build` directory resolve. For another working directory, supply environment variables including an absolute `STATIC_DIR`. Deploy the executable, `frontend/build`, and environment configuration together. The executable embeds the SQL migrations. Windows builds run on Windows; build on the target platform for Linux deployment.
 
-`backend/.env.example` documents DATABASE_URL, MEILI_URL, optional MEILI_KEY, BIND_ADDRESS, FRONTEND_ORIGIN, and STATIC_DIR. Root/no-password and unauthenticated Meilisearch are the user's local development settings. Authentication and user roles are not implemented; the app binds to loopback by default.
+`backend/.env.example` documents DATABASE_URL, MEILI_URL, optional MEILI_KEY, BIND_ADDRESS, FRONTEND_ORIGIN, and STATIC_DIR. Root/no-password and unauthenticated Meilisearch are the user's local development settings. Authentication and permission-based roles are enforced on API endpoints; the app binds to loopback by default. See the authentication section below.
 
 ## Demo seed data
 
@@ -151,3 +151,52 @@ Browser visual verification was unavailable in the task environment; Svelte chec
 ## Design
 
 Paste [frontend/pen-dev-design-prompt.md](frontend/pen-dev-design-prompt.md) into pen.dev to generate a coordinated design for every application page and workflow.
+
+
+## Authentication, permissions and delivery orders
+
+Run `cargo run --bin seed` from `backend` to apply migrations and add `admin`, `staff`, and `finance`, each with password `asdqwe123!`. Existing passwords and role assignments are preserved. Account names are case insensitive. Change demo passwords on the Account page. The local ignored `.env` has been given a random JWT secret; other environments must set `JWT_SECRET` to at least 32 random bytes. `COOKIE_SECURE` defaults to true; use false only for local HTTP development. Set `FRONTEND_ORIGIN` to the exact browser origin, including protocol and port. Production requires HTTPS.
+
+Access JWTs last 15 minutes. Refresh JWTs belong to a session with an absolute seven-day lifetime and rotate on every refresh. Tokens use HS256, a fixed issuer/audience, explicit token types and unique IDs. Cookies are host-only, HttpOnly, SameSite=Strict, and Secure by default; access cookies use `/api`, refresh cookies `/api/auth`. Tokens are never returned in JSON or stored in browser storage. Passwords use salted Argon2id hashes. JSON-only writes and origin/Fetch Metadata checks protect cookie-based operations against CSRF. Five consecutive failed logins lock the username for 15 minutes.
+
+Every protected request checks the session and current database permissions. Logout revokes the session immediately, including access tokens; logout-all, password changes, user deactivation and role assignments revoke affected sessions. Reusing a rotated refresh token revokes its entire session. Concurrent refreshes therefore count as reuse: the frontend shares one refresh promise within a tab; separate tabs must coordinate refreshes or sign in again after a collision. The design follows [RFC 9700 refresh-token rotation guidance](https://www.rfc-editor.org/rfc/rfc9700.html#section-4.14.2). An hourly job deletes expired sessions and their refresh-token history, completed idempotency records older than 24 hours, and old lockouts. Rotated-token history is retained until the family expires so cleanup cannot disable reuse detection.
+
+| Role | Default permissions |
+|---|---|
+| Admin | Every permission, including products, users and roles |
+| Staff | Read business data; create/edit invoices, purchase orders and delivery drafts; request invoice voids; dispatch approved delivery orders |
+| Finance | Read business data; manage payments; void invoices and review Staff void requests; approve, dispatch and cancel delivery orders |
+
+The Roles page supports creating roles, changing Staff/Finance/custom-role permissions, creating users, and assigning roles. The Admin role and your own role/active state are protected against accidental lockout. Seed reruns preserve permission edits to existing Staff/Finance roles.
+
+Writes require an `Idempotency-Key` (1-128 ASCII characters), scoped to the authenticated user. Auth writes and document previews are exempt. A key is bound to the method, URI and exact request bytes; replay returns the original status/body, and a different payload returns 409. Concurrent requests use a database unique key to elect one executor. Completed requests are retained for at least 24 hours. The frontend keeps the same key after network failures. A crash or persistence failure may leave a pending record: retries return 409 and never execute the mutation again. Pending records are deliberately retained for manual reconciliation; confirm the business operation before removing one or using a new key. This favors preventing duplicates over silently replaying uncertain operations.
+
+Delivery orders link to a **sales invoice**, as confirmed, and only Paid / Partial Paid invoices qualify. Details reference invoice-line IDs, with server-snapshotted product names, positive quantities and notes. The workflow is `Draft -> Approved -> On Delivery -> Delivered` (Approved can also go straight to Delivered). Finance approval reserves `on_delivery_quantity`; delivery moves the reservation to `delivered_quantity`. The reserved count includes approved orders awaiting dispatch. Drafts do not reserve stock, and approval rechecks the balance under the invoice lock, so competing drafts cannot over-deliver. Staff can request cancellation of approved/in-transit orders through the Approvals page; Finance approves or rejects the request. Cancellation releases the reservation; delivered orders cannot be cancelled. Delivery counts never deduct physical stock a second time, because invoice posting already records that movement.
+
+Invoice metadata can be edited while active. Optional line edits are allowed only before payments or any delivery orders exist; they adjust the stock ledger and linked purchase-order quantities transactionally. Invoice voids retain invoice/payment history and a reason, reviewer and refund-due audit. Staff requests are reviewed by Finance; Finance/Admin may void directly. Cancel associated delivery orders first. Delivered invoices cannot be voided. Purchase voids reverse receipt/released stock only when the resulting inventory remains valid. Refund due is recorded; no cash refund is executed automatically.
+
+### API additions
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/auth/login` | Username/password login; sets cookies |
+| POST | `/api/auth/refresh` | Rotate refresh and access JWTs |
+| POST | `/api/auth/logout`, `/api/auth/logout-all` | Revoke current/all sessions and clear cookies |
+| GET | `/api/auth/me` | Current user, role and permissions |
+| POST | `/api/auth/password` | Verify current password, change password and revoke all sessions |
+| GET/POST | `/api/roles`, `/api/users` | List/create roles or users (Admin permission) |
+| POST | `/api/roles/{id}`, `/api/users/{id}/role` | Edit role permissions or assign user role/active state |
+| POST | `/api/invoices/{id}` | Edit number/date/person and optional lines |
+| POST | `/api/invoices/{id}/cancel` | Request or directly execute invoice void |
+| GET | `/api/void-requests` | List approval requests |
+| POST | `/api/void-requests/{id}/approve`, `/reject` | Finance review |
+| POST | `/api/delivery-orders/{id}/cancel-request` | Staff requests cancellation with `{ "reason": "..." }` |
+| GET | `/api/delivery-cancellation-requests` | List delivery cancellation approvals |
+| POST | `/api/delivery-cancellation-requests/{id}/approve`, `/reject` | Finance review of delivery cancellation |
+| GET/POST | `/api/delivery-orders` | List/create delivery orders |
+| GET/POST | `/api/delivery-orders/{id}` | Detail/edit draft |
+| POST | `/api/delivery-orders/{id}/approve`, `/status` | Finance approval or delivery transition |
+
+Delivery create/edit body: `{ "sales_invoice_id": 1, "driver_name": "Driver", "date": "2026-11-13", "address": "Jakarta", "note": "", "details": [{ "sales_invoice_detail_id": 1, "quantity": 2, "notes": "" }] }`. Status body: `{ "status": "On Delivery" }`, `{ "status": "Delivered" }`, or `{ "status": "Cancelled", "cancellation_note": "Reason" }`. Approval takes `{}`. All writes use JSON content type. The legacy sales cancellation route uses the same Finance approval workflow.
+
+Run `cargo test -- --include-ignored` from `backend` to include MySQL workflow tests. These create uniquely named temporary databases and require create/drop permission; override `TEST_MYSQL_ADMIN_URL` if needed. Tests cover migrations, invoice/stock/payment flows, JWT validation, refresh replay/concurrency, revocation, RBAC, idempotent replay/concurrency, Finance void approvals, delivery quantity races and cancellation release. Run `npm run check` and `npm run build` from `frontend` for UI validation.
