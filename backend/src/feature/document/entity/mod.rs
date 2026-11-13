@@ -20,6 +20,12 @@ pub(crate) struct DocumentInput {
 }
 #[derive(Serialize, sqlx::FromRow)]
 pub(crate) struct Document {
+    #[sqlx(default)]
+    pub(crate) created_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) updated_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) deleted_at: Option<String>,
     pub(crate) id: i64,
     pub(crate) kind: String,
     pub(crate) number: String,
@@ -32,6 +38,12 @@ pub(crate) struct Document {
 }
 #[derive(Serialize, sqlx::FromRow)]
 pub(crate) struct Line {
+    #[sqlx(default)]
+    pub(crate) created_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) updated_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) deleted_at: Option<String>,
     pub(crate) id: i64,
     pub(crate) product_id: i64,
     pub(crate) item_name: String,
@@ -43,4 +55,4 @@ pub(crate) struct Line {
     pub(crate) subtotal: i64,
     pub(crate) status: String,
 }
-pub(crate) const DOC_SELECT: &str = "SELECT id,kind,number,CAST(date AS CHAR) date,person,purchase_order_id,grand_total,remaining_payment,status FROM documents";
+pub(crate) const DOC_SELECT: &str = "SELECT id,kind,number,CAST(date AS CHAR) date,person,purchase_order_id,grand_total,remaining_payment,status,CAST(created_at AS CHAR) created_at,CAST(updated_at AS CHAR) updated_at,CAST(deleted_at AS CHAR) deleted_at FROM documents WHERE deleted_at IS NULL";

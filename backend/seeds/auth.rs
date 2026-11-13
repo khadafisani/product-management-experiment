@@ -59,7 +59,7 @@ pub async fn seed_auth(db: &sqlx::MySqlPool) -> Result<(), Box<dyn std::error::E
                 .contains(&p),
             };
             if grant && (inserted || role == "Admin") {
-                sqlx::query("INSERT IGNORE INTO role_permissions(role_id,permission) VALUES(?,?)")
+                sqlx::query("INSERT INTO role_permissions(role_id,permission) VALUES(?,?) ON DUPLICATE KEY UPDATE deleted_at=NULL")
                     .bind(id)
                     .bind(p)
                     .execute(&mut *tx)

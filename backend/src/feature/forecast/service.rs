@@ -6,7 +6,7 @@ pub(crate) async fn forecast(a: App, q: ForecastQuery) -> Result<Value> {
     super::validation::validate(&q)?;
     let rows = sqlx
         ::query(
-            "SELECT p.id,p.name,p.remaining_quantity quantity,p.reorder_level,COALESCE(SUM(CASE WHEN d.kind='sales_invoice' AND d.status<>'Cancelled' AND d.date BETWEEN DATE_SUB(CURRENT_DATE, INTERVAL 29 DAY) AND CURRENT_DATE THEN l.quantity ELSE 0 END),0) sold FROM products p LEFT JOIN document_lines l ON l.product_id=p.id LEFT JOIN documents d ON d.id=l.document_id WHERE p.status='Active' GROUP BY p.id ORDER BY p.remaining_quantity"
+            "SELECT p.id,p.name,p.remaining_quantity quantity,p.reorder_level,COALESCE(SUM(CASE WHEN l.deleted_at IS NULL AND d.deleted_at IS NULL AND d.kind='sales_invoice' AND d.status<>'Cancelled' AND d.date BETWEEN DATE_SUB(CURRENT_DATE, INTERVAL 29 DAY) AND CURRENT_DATE THEN l.quantity ELSE 0 END),0) sold FROM products p LEFT JOIN document_lines l ON l.product_id=p.id LEFT JOIN documents d ON d.id=l.document_id WHERE p.deleted_at IS NULL AND p.status='Active' GROUP BY p.id ORDER BY p.remaining_quantity"
         )
         .fetch_all(&a.db).await?;
     Ok(

@@ -17,7 +17,7 @@ pub(crate) async fn cancel(a: App, id: i64, input: super::entity::CancelInput) -
     super::validation::validate_cancellation(&input.reason)?;
     let mut tx = a.db.begin().await?;
     let row: Option<(String, String)> =
-        sqlx::query_as("SELECT kind,status FROM documents WHERE id=? FOR UPDATE")
+        sqlx::query_as("SELECT kind,status FROM documents WHERE deleted_at IS NULL AND id=? FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
@@ -37,7 +37,7 @@ pub(crate) async fn cancel(a: App, id: i64, input: super::entity::CancelInput) -
         );
     }
     let deliveries: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM delivery_orders WHERE sales_invoice_id=? AND status<>'Cancelled'",
+        "SELECT COUNT(*) FROM delivery_orders WHERE deleted_at IS NULL AND sales_invoice_id=? AND status<>'Cancelled'",
     )
     .bind(id)
     .fetch_one(&mut *tx)
@@ -48,7 +48,7 @@ pub(crate) async fn cancel(a: App, id: i64, input: super::entity::CancelInput) -
         ));
     }
     let lines: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT product_id,quantity FROM document_lines WHERE document_id=? ORDER BY product_id",
+        "SELECT product_id,quantity FROM document_lines WHERE deleted_at IS NULL AND document_id=? ORDER BY product_id",
     )
     .bind(id)
     .fetch_all(&mut *tx)
@@ -64,7 +64,7 @@ pub(crate) async fn cancel(a: App, id: i64, input: super::entity::CancelInput) -
         )
         .await?;
     }
-    let (refund_due,):(i64,)=sqlx::query_as("SELECT CAST(COALESCE(SUM(amount),0) AS SIGNED) FROM payment_allocations WHERE invoice_id=?").bind(id).fetch_one(&mut *tx).await?;
+    let (refund_due,):(i64,)=sqlx::query_as("SELECT CAST(COALESCE(SUM(amount),0) AS SIGNED) FROM payment_allocations WHERE deleted_at IS NULL AND invoice_id=?").bind(id).fetch_one(&mut *tx).await?;
     sqlx::query(
         "INSERT INTO sales_invoice_cancellations(sales_invoice_id,reason,refund_due) VALUES(?,?,?)",
     )
@@ -73,11 +73,11 @@ pub(crate) async fn cancel(a: App, id: i64, input: super::entity::CancelInput) -
     .bind(refund_due)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE documents SET status='Cancelled',remaining_payment=0 WHERE id=?")
+    sqlx::query("UPDATE documents SET status='Cancelled',remaining_payment=0 WHERE deleted_at IS NULL AND id=?")
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE document_lines SET status='Cancelled' WHERE document_id=?")
+    sqlx::query("UPDATE document_lines SET status='Cancelled' WHERE deleted_at IS NULL AND document_id=?")
         .bind(id)
         .execute(&mut *tx)
         .await?;

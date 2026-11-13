@@ -6,7 +6,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
-async fn call(
+pub(super) async fn call(
     app: &Router,
     path: &str,
     cookie: &str,
@@ -46,7 +46,7 @@ fn cookie(headers: &HeaderMap) -> String {
         .collect::<Vec<_>>()
         .join("; ")
 }
-async fn login(app: &Router, name: &str) -> String {
+pub(super) async fn login(app: &Router, name: &str) -> String {
     let (s, _, h) = call(
         app,
         "/api/auth/login",

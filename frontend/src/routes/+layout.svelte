@@ -182,13 +182,13 @@
 					>
 						<a
 							href="/approvals/?section=invoices"
-							class:active={route.url.searchParams.get('section') !== 'deliveries'}
-							>Invoice approvals</a
+							class:active={route.url.searchParams.get('section') !== 'deliveries' &&
+								!route.url.pathname.startsWith('/approvals/deliveries/')}>Invoice approvals</a
 						>
 						<a
 							href="/approvals/?section=deliveries"
-							class:active={route.url.searchParams.get('section') === 'deliveries'}
-							>Delivery cancellations</a
+							class:active={route.url.searchParams.get('section') === 'deliveries' ||
+								route.url.pathname.startsWith('/approvals/deliveries/')}>Delivery cancellations</a
 						>
 					</div>{/if}
 				{#if $user.permissions.includes('roles.manage')}<div class="nav-group">

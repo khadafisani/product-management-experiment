@@ -158,7 +158,7 @@ pub(crate) async fn login(State(a): State<App>, Json(input): Json<Login>) -> Res
         ));
     }
     let user: Option<(i64, String)> = sqlx::query_as(
-        "SELECT id,password_hash FROM users WHERE username=? AND active=TRUE FOR UPDATE",
+        "SELECT id,password_hash FROM users WHERE deleted_at IS NULL AND username=? AND active=TRUE AND EXISTS(SELECT 1 FROM roles r WHERE r.id=users.role_id AND r.deleted_at IS NULL) FOR UPDATE",
     )
     .bind(&username)
     .fetch_optional(&mut *tx)
@@ -218,7 +218,7 @@ pub(crate) async fn refresh(State(a): State<App>, headers: HeaderMap) -> Result<
     let c = read(&headers, "refresh_token", "refresh")?;
     let mut tx = a.db.begin().await?;
     let session: Option<(i64, i64, bool)> = sqlx::query_as(
-        "SELECT user_id,expires_at,revoked FROM auth_sessions WHERE id=? FOR UPDATE",
+        "SELECT user_id,expires_at,revoked FROM auth_sessions WHERE deleted_at IS NULL AND id=? FOR UPDATE",
     )
     .bind(&c.sid)
     .fetch_optional(&mut *tx)
@@ -227,19 +227,22 @@ pub(crate) async fn refresh(State(a): State<App>, headers: HeaderMap) -> Result<
     if revoked || exp <= now() || uid != c.sub {
         return Err(denied());
     }
-    let active: (bool,) = sqlx::query_as("SELECT active FROM users WHERE id=?")
-        .bind(uid)
-        .fetch_one(&mut *tx)
-        .await?;
+    let active: (bool,) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL AND active=TRUE AND id=?)",
+    )
+    .bind(uid)
+    .fetch_one(&mut *tx)
+    .await?;
     if !active.0 {
         return Err(denied());
     }
-    let used: Option<(bool,)> =
-        sqlx::query_as("SELECT used FROM refresh_tokens WHERE jti=? AND session_id=?")
-            .bind(&c.jti)
-            .bind(&c.sid)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let used: Option<(bool,)> = sqlx::query_as(
+        "SELECT used FROM refresh_tokens WHERE deleted_at IS NULL AND jti=? AND session_id=?",
+    )
+    .bind(&c.jti)
+    .bind(&c.sid)
+    .fetch_optional(&mut *tx)
+    .await?;
     if used != Some((false,)) {
         sqlx::query("UPDATE auth_sessions SET revoked=TRUE WHERE id=?")
             .bind(&c.sid)
@@ -288,7 +291,7 @@ pub(crate) async fn logout_all(
     Ok(cookies("", "", 0))
 }
 pub(crate) async fn allowed(a: &App, uid: i64, permission: &str) -> Result<bool> {
-    Ok(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM users u JOIN role_permissions rp ON rp.role_id=u.role_id WHERE u.id=? AND u.active=TRUE AND rp.permission=?").bind(uid).bind(permission).fetch_one(&a.db).await?>0)
+    Ok(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM users u JOIN role_permissions rp ON rp.role_id=u.role_id WHERE u.id=? AND u.active=TRUE AND u.deleted_at IS NULL AND rp.deleted_at IS NULL AND EXISTS(SELECT 1 FROM permissions p WHERE p.name=rp.permission AND p.deleted_at IS NULL) AND EXISTS(SELECT 1 FROM roles r WHERE r.id=u.role_id AND r.deleted_at IS NULL) AND rp.permission=?").bind(uid).bind(permission).fetch_one(&a.db).await?>0)
 }
 pub(crate) async fn me(
     State(a): State<App>,
@@ -300,7 +303,7 @@ pub(crate) async fn me(
     .bind(c.sub)
     .fetch_one(&a.db)
     .await?;
-    let permissions:Vec<String>=sqlx::query_scalar("SELECT permission FROM role_permissions WHERE role_id=(SELECT role_id FROM users WHERE id=?) ORDER BY permission").bind(c.sub).fetch_all(&a.db).await?;
+    let permissions:Vec<String>=sqlx::query_scalar("SELECT permission FROM role_permissions WHERE deleted_at IS NULL AND EXISTS(SELECT 1 FROM permissions p WHERE p.name=role_permissions.permission AND p.deleted_at IS NULL) AND role_id=(SELECT role_id FROM users WHERE deleted_at IS NULL AND id=?) ORDER BY permission").bind(c.sub).fetch_all(&a.db).await?;
     Ok(Json(
         json!({"id":c.sub,"username":username,"role":role,"permissions":permissions}),
     ))
@@ -345,7 +348,7 @@ pub(crate) async fn guard(State(a): State<App>, mut req: Request, next: Next) ->
         return Ok(private(next.run(req).await));
     }
     let c = read(req.headers(), "access_token", "access")?;
-    let valid:i64=sqlx::query_scalar("SELECT COUNT(*) FROM auth_sessions s JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.user_id=? AND s.revoked=FALSE AND s.expires_at>? AND u.active=TRUE").bind(&c.sid).bind(c.sub).bind(now()).fetch_one(&a.db).await?;
+    let valid:i64=sqlx::query_scalar("SELECT COUNT(*) FROM auth_sessions s JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.user_id=? AND s.revoked=FALSE AND s.expires_at>? AND u.active=TRUE AND u.deleted_at IS NULL AND s.deleted_at IS NULL AND EXISTS(SELECT 1 FROM roles r WHERE r.id=u.role_id AND r.deleted_at IS NULL)").bind(&c.sid).bind(c.sub).bind(now()).fetch_one(&a.db).await?;
     if valid == 0 {
         return Err(denied());
     }
@@ -355,12 +358,17 @@ pub(crate) async fn guard(State(a): State<App>, mut req: Request, next: Next) ->
         .map(|p| p.as_str())
         .unwrap_or("");
     let permission = match route {
+        "/api/documents/{id}" if req.method() == axum::http::Method::DELETE => "invoices.void",
         "/api/lists/{resource}" => {
             crate::feature::pagination::permission(path.rsplit('/').next().unwrap_or(""))
                 .ok_or_else(|| Error(StatusCode::NOT_FOUND, "List not found".into()))?
         }
         "/api/auth/me" | "/api/auth/password" | "/api/auth/logout-all" => "profile.read",
-        "/api/roles" | "/api/roles/{id}" | "/api/users" | "/api/users/{id}/role" => "roles.manage",
+        "/api/roles"
+        | "/api/roles/{id}"
+        | "/api/users"
+        | "/api/users/{id}/role"
+        | "/api/users/{id}" => "roles.manage",
         "/api/payments" | "/api/payments/{id}" => {
             if write {
                 "payments.write"
@@ -376,13 +384,13 @@ pub(crate) async fn guard(State(a): State<App>, mut req: Request, next: Next) ->
             }
         }
         "/api/void-requests/{id}/approve" | "/api/void-requests/{id}/reject" => "invoices.void",
-        "/api/void-requests" | "/api/invoices/{id}/cancel" | "/api/sales-invoices/{id}/cancel" => {
+        "/api/void-requests" | "/api/void-requests/{id}" | "/api/invoices/{id}/cancel" | "/api/sales-invoices/{id}/cancel" => {
             "invoices.request_void"
         }
         "/api/delivery-cancellation-requests/{id}/approve"
         | "/api/delivery-cancellation-requests/{id}/reject"
         | "/api/delivery-orders/{id}/approve" => "delivery.approve",
-        "/api/delivery-cancellation-requests" => "delivery.read",
+        "/api/delivery-cancellation-requests" | "/api/delivery-cancellation-requests/{id}" => "delivery.read",
         "/api/delivery-orders" | "/api/delivery-orders/{id}" => {
             if write {
                 "delivery.write"
@@ -438,7 +446,15 @@ pub(crate) async fn guard(State(a): State<App>, mut req: Request, next: Next) ->
     digest.update([0]);
     digest.update(&bytes);
     let fingerprint = format!("{:x}", digest.finalize());
-    let inserted=sqlx::query("INSERT IGNORE INTO idempotency_requests(user_id,request_key,fingerprint,created_at) VALUES(?,?,?,?)").bind(c.sub).bind(&key).bind(&fingerprint).bind(now()).execute(&a.db).await?.rows_affected();
+    let inserted = sqlx::query(
+        "INSERT IGNORE INTO idempotency_requests(user_id,request_key,fingerprint) VALUES(?,?,?)",
+    )
+    .bind(c.sub)
+    .bind(&key)
+    .bind(&fingerprint)
+    .execute(&a.db)
+    .await?
+    .rows_affected();
     if inserted == 0 {
         let(fp,status,body):(String,Option<i32>,Option<Vec<u8>>)=sqlx::query_as("SELECT fingerprint,status_code,response FROM idempotency_requests WHERE user_id=? AND request_key=?").bind(c.sub).bind(&key).fetch_one(&a.db).await?;
         if fp != fingerprint {
@@ -482,7 +498,7 @@ pub(crate) async fn cleanup(a: &App) -> Result<()> {
         .bind(now())
         .execute(&a.db)
         .await?;
-    sqlx::query("DELETE FROM idempotency_requests WHERE status_code IS NOT NULL AND created_at<?")
+    sqlx::query("DELETE FROM idempotency_requests WHERE status_code IS NOT NULL AND created_at<FROM_UNIXTIME(?)")
         .bind(now() - 86400)
         .execute(&a.db)
         .await?;
@@ -499,22 +515,23 @@ pub(crate) struct RoleInput {
     permissions: Vec<String>,
 }
 pub(crate) async fn roles(State(a): State<App>) -> Result<Json<Value>> {
-    let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id,name FROM roles ORDER BY id")
+    let rows: Vec<(i64, String,String,String)> = sqlx::query_as("SELECT id,name,CAST(created_at AS CHAR),CAST(updated_at AS CHAR) FROM roles WHERE deleted_at IS NULL ORDER BY id")
         .fetch_all(&a.db)
         .await?;
     let mut result = Vec::new();
-    for (id, name) in rows {
+    for (id, name, created_at, updated_at) in rows {
         let permissions: Vec<String> = sqlx::query_scalar(
-            "SELECT permission FROM role_permissions WHERE role_id=? ORDER BY permission",
+            "SELECT permission FROM role_permissions WHERE deleted_at IS NULL AND EXISTS(SELECT 1 FROM permissions p WHERE p.name=role_permissions.permission AND p.deleted_at IS NULL) AND role_id=? ORDER BY permission",
         )
         .bind(id)
         .fetch_all(&a.db)
         .await?;
-        result.push(json!({"id":id,"name":name,"permissions":permissions}));
+        result.push(json!({"id":id,"name":name,"permissions":permissions,"created_at":created_at,"updated_at":updated_at,"deleted_at":null}));
     }
-    let permissions: Vec<String> = sqlx::query_scalar("SELECT name FROM permissions ORDER BY name")
-        .fetch_all(&a.db)
-        .await?;
+    let permissions: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM permissions WHERE deleted_at IS NULL ORDER BY name")
+            .fetch_all(&a.db)
+            .await?;
     Ok(Json(json!({"roles":result,"permissions":permissions})))
 }
 pub(crate) async fn save_role(
@@ -536,14 +553,16 @@ pub(crate) async fn save_role(
         .await?
         .last_insert_id() as i64;
     for p in std::collections::HashSet::<String>::from_iter(d.permissions) {
-        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM permissions WHERE name=?")
-            .bind(&p)
-            .fetch_one(&mut *tx)
-            .await?;
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM permissions WHERE deleted_at IS NULL AND name=?",
+        )
+        .bind(&p)
+        .fetch_one(&mut *tx)
+        .await?;
         if exists == 0 {
             return Err(bad("Unknown permission"));
         }
-        sqlx::query("INSERT INTO role_permissions(role_id,permission) VALUES(?,?)")
+        sqlx::query("INSERT INTO role_permissions(role_id,permission) VALUES(?,?) ON DUPLICATE KEY UPDATE deleted_at=NULL")
             .bind(id)
             .bind(p)
             .execute(&mut *tx)
@@ -567,7 +586,23 @@ pub(crate) async fn user_role(
         return Err(bad("Cannot change your own role or active state"));
     }
     let mut tx = a.db.begin().await?;
-    sqlx::query("UPDATE users SET role_id=?,active=? WHERE id=?")
+    let role: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM roles WHERE id=? AND deleted_at IS NULL FOR UPDATE")
+            .bind(d.role_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if role.is_none() {
+        return Err(bad("Role not found"));
+    }
+    let user: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM users WHERE id=? AND deleted_at IS NULL FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if user.is_none() {
+        return Err(bad("User not found"));
+    }
+    sqlx::query("UPDATE users SET updated_at=CURRENT_TIMESTAMP(6),role_id=?,active=? WHERE deleted_at IS NULL AND id=?")
         .bind(d.role_id)
         .bind(d.active)
         .bind(id)
@@ -582,11 +617,11 @@ pub(crate) async fn user_role(
 }
 
 pub(crate) async fn users(State(a): State<App>) -> Result<Json<Value>> {
-    let rows: Vec<(i64, String, i64, bool)> =
-        sqlx::query_as("SELECT id,username,role_id,active FROM users ORDER BY id")
+    let rows: Vec<(i64, String, i64, bool,String,String)> =
+        sqlx::query_as("SELECT id,username,role_id,active,CAST(created_at AS CHAR),CAST(updated_at AS CHAR) FROM users WHERE deleted_at IS NULL ORDER BY id")
             .fetch_all(&a.db)
             .await?;
-    Ok(Json(json!(rows.into_iter().map(|(id,username,role_id,active)|json!({"id":id,"username":username,"role_id":role_id,"active":active})).collect::<Vec<_>>())))
+    Ok(Json(json!(rows.into_iter().map(|(id,username,role_id,active,created_at,updated_at)|json!({"id":id,"username":username,"role_id":role_id,"active":active,"created_at":created_at,"updated_at":updated_at,"deleted_at":null})).collect::<Vec<_>>())))
 }
 pub(crate) async fn update_role(
     State(a): State<App>,
@@ -597,10 +632,11 @@ pub(crate) async fn update_role(
         return Err(bad("Valid role name required"));
     }
     let mut tx = a.db.begin().await?;
-    let name: Option<String> = sqlx::query_scalar("SELECT name FROM roles WHERE id=? FOR UPDATE")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let name: Option<String> =
+        sqlx::query_scalar("SELECT name FROM roles WHERE deleted_at IS NULL AND id=? FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
     let name = name.ok_or_else(|| bad("Role not found"))?;
     if name == "Admin"
         || (name != d.name.trim()
@@ -609,30 +645,34 @@ pub(crate) async fn update_role(
     {
         return Err(bad("Built-in roles are protected; create a custom role"));
     }
-    sqlx::query("UPDATE roles SET name=? WHERE id=?")
-        .bind(d.name.trim())
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM role_permissions WHERE role_id=?")
+    sqlx::query(
+        "UPDATE roles SET updated_at=CURRENT_TIMESTAMP(6),name=? WHERE deleted_at IS NULL AND id=?",
+    )
+    .bind(d.name.trim())
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE role_permissions SET deleted_at=CURRENT_TIMESTAMP(6) WHERE deleted_at IS NULL AND role_id=?")
         .bind(id)
         .execute(&mut *tx)
         .await?;
     for p in std::collections::HashSet::<String>::from_iter(d.permissions) {
-        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM permissions WHERE name=?")
-            .bind(&p)
-            .fetch_one(&mut *tx)
-            .await?;
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM permissions WHERE deleted_at IS NULL AND name=?",
+        )
+        .bind(&p)
+        .fetch_one(&mut *tx)
+        .await?;
         if exists == 0 {
             return Err(bad("Unknown permission"));
         }
-        sqlx::query("INSERT INTO role_permissions(role_id,permission) VALUES(?,?)")
+        sqlx::query("INSERT INTO role_permissions(role_id,permission) VALUES(?,?) ON DUPLICATE KEY UPDATE deleted_at=NULL")
             .bind(id)
             .bind(p)
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query("UPDATE auth_sessions SET revoked=TRUE WHERE user_id IN (SELECT id FROM users WHERE role_id=?)").bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE auth_sessions SET revoked=TRUE WHERE user_id IN (SELECT id FROM users WHERE deleted_at IS NULL AND role_id=?)").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"id":id})))
 }
@@ -665,13 +705,23 @@ pub(crate) async fn create_user(
     })
     .await
     .map_err(|_| bad("Password hashing failed"))??;
+    let mut tx = a.db.begin().await?;
+    let role: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM roles WHERE id=? AND deleted_at IS NULL FOR UPDATE")
+            .bind(d.role_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if role.is_none() {
+        return Err(bad("Role not found"));
+    }
     let id = sqlx::query("INSERT INTO users(username,password_hash,role_id) VALUES(?,?,?)")
         .bind(d.username.trim().to_lowercase())
         .bind(hash)
         .bind(d.role_id)
-        .execute(&a.db)
+        .execute(&mut *tx)
         .await?
         .last_insert_id();
+    tx.commit().await?;
     Ok(Json(json!({"id":id})))
 }
 
@@ -692,10 +742,11 @@ pub(crate) async fn change_password(
     if d.current_password.len() > 1024 || d.new_password.len() < 10 || d.new_password.len() > 1024 {
         return Err(bad("New password must contain 10-1024 bytes"));
     }
-    let old: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id=?")
-        .bind(c.sub)
-        .fetch_one(&a.db)
-        .await?;
+    let old: String =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE deleted_at IS NULL AND id=?")
+            .bind(c.sub)
+            .fetch_one(&a.db)
+            .await?;
     let old_verify = old.clone();
     let next = tokio::task::spawn_blocking(move || {
         use argon2::{
@@ -714,13 +765,15 @@ pub(crate) async fn change_password(
     .await
     .map_err(|_| bad("Password hashing failed"))??;
     let mut tx = a.db.begin().await?;
-    if sqlx::query("UPDATE users SET password_hash=? WHERE id=? AND password_hash=?")
-        .bind(next)
-        .bind(c.sub)
-        .bind(old)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
+    if sqlx::query(
+        "UPDATE users SET password_hash=? WHERE deleted_at IS NULL AND id=? AND password_hash=?",
+    )
+    .bind(next)
+    .bind(c.sub)
+    .bind(old)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
         != 1
     {
         return Err(bad("Password changed concurrently; sign in again"));

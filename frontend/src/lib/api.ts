@@ -1,4 +1,11 @@
-export type Product = {
+// Persisted API records include database-managed lifecycle metadata.
+// Optional fields allow the same types to represent unsaved form drafts.
+export type Lifecycle = {
+	created_at?: string | null;
+	updated_at?: string | null;
+	deleted_at?: string | null;
+};
+export type Product = Lifecycle & {
 	id: number;
 	name: string;
 	quantity: number;
@@ -9,7 +16,7 @@ export type Product = {
 	price: number;
 	reorder_level: number;
 };
-export type Document = {
+export type Document = Lifecycle & {
 	id: number;
 	kind: string;
 	number: string;
@@ -20,7 +27,7 @@ export type Document = {
 	remaining_payment: number;
 	status: string;
 };
-export type Payment = {
+export type Payment = Lifecycle & {
 	id: number;
 	reference: string;
 	date: string;
@@ -29,7 +36,7 @@ export type Payment = {
 	invoices: string;
 	invoice_links: { id: number; number: string; kind: string }[];
 };
-export type Forecast = {
+export type Forecast = Lifecycle & {
 	id: number;
 	name: string;
 	quantity: number;
@@ -39,7 +46,7 @@ export type Forecast = {
 	suggested_order: number;
 	risk: string;
 };
-export type Line = {
+export type Line = Lifecycle & {
 	product_id: number;
 	quantity: number;
 	price: number;

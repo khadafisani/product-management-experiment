@@ -3,3 +3,5 @@
 mod auth_delivery_tests;
 mod integration_tests;
 mod validation;
+
+mod lifecycle;

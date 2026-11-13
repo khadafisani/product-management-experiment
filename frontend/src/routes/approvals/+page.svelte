@@ -69,9 +69,7 @@
 			{refresh}
 		>
 			{#snippet actions(r)}<RowActions
-					href={delivery
-						? `/delivery-orders/${r.delivery_order_id}/`
-						: `/documents/${r.invoice_id}/`}
+					href={`/approvals/${section}/${r.id}/`}
 					label={delivery ? r.delivery_order_number : r.invoice_number}
 					disabled={busy}
 					items={r.status === 'Pending' &&

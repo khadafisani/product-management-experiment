@@ -20,7 +20,7 @@ pub(crate) async fn release_paid_stock(
     invoice: i64
 ) -> Result<()> {
     let (kind, status, released): (String, String, bool) = sqlx
-        ::query_as("SELECT kind,status,stock_released FROM documents WHERE id=? FOR UPDATE")
+        ::query_as("SELECT kind,status,stock_released FROM documents WHERE deleted_at IS NULL AND id=? FOR UPDATE")
         .bind(invoice)
         .fetch_one(&mut **tx).await?;
     if kind != "purchase_invoice" || status != "Paid" || released {
@@ -28,7 +28,7 @@ pub(crate) async fn release_paid_stock(
     }
     let lines: Vec<(i64, i64)> = sqlx
         ::query_as(
-            "SELECT product_id,quantity FROM document_lines WHERE document_id=? ORDER BY product_id"
+            "SELECT product_id,quantity FROM document_lines WHERE deleted_at IS NULL AND document_id=? ORDER BY product_id"
         )
         .bind(invoice)
         .fetch_all(&mut **tx).await?;
@@ -43,7 +43,7 @@ pub(crate) async fn release_paid_stock(
         ).await?;
     }
     sqlx
-        ::query("UPDATE documents SET stock_released=TRUE WHERE id=?")
+        ::query("UPDATE documents SET stock_released=TRUE WHERE deleted_at IS NULL AND id=?")
         .bind(invoice)
         .execute(&mut **tx).await?;
     Ok(())

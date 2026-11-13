@@ -68,7 +68,7 @@ fn spec(resource: &str, f: &Filters) -> Result<Spec> {
             status: "t.status",
             table: "products"},
         "documents"|"purchase-orders"|"purchase-invoices"|"sales-invoices" => Spec {
-            source: "documents t LEFT JOIN documents po ON po.id=t.purchase_order_id".into(),
+            source: "documents t LEFT JOIN documents po ON po.id=t.purchase_order_id AND po.deleted_at IS NULL".into(),
             date: "t.date",
             base: match resource {
                 "purchase-orders" => "t.kind='purchase_order'",
@@ -85,12 +85,12 @@ fn spec(resource: &str, f: &Filters) -> Result<Spec> {
             source: "payments t".into(),
             date: "t.date",
             base: "1=1",
-            payload: "JSON_OBJECT('id',t.id,'reference',t.reference,'date',CAST(t.date AS CHAR),'kind',t.kind,'amount',t.amount,'invoice_count',(SELECT COUNT(*) FROM payment_allocations a WHERE a.payment_id=t.id))",
+            payload: "JSON_OBJECT('id',t.id,'reference',t.reference,'date',CAST(t.date AS CHAR),'kind',t.kind,'amount',t.amount,'invoice_count',(SELECT COUNT(*) FROM payment_allocations a JOIN documents invoice ON invoice.id=a.invoice_id AND invoice.deleted_at IS NULL WHERE a.deleted_at IS NULL AND a.payment_id=t.id))",
             search: vec!["t.reference"],
             status: "",
             table: "payments"},
         "delivery-orders" => Spec {
-            source: "delivery_orders t JOIN documents d ON d.id=t.sales_invoice_id".into(),
+            source: "delivery_orders t JOIN documents d ON d.id=t.sales_invoice_id AND d.deleted_at IS NULL".into(),
             date: "t.date",
             base: "1=1",
             payload: "JSON_OBJECT('id',t.id,'number',CONCAT('DO-',LPAD(t.id,GREATEST(6,CHAR_LENGTH(t.id)),'0')),'sales_invoice_id',d.id,'sales_invoice_number',d.number,'date',CAST(t.date AS CHAR),'driver_name',t.driver_name,'address',t.address,'note',t.note,'cancellation_note',t.cancellation_note,'status',t.status)",
@@ -101,7 +101,7 @@ fn spec(resource: &str, f: &Filters) -> Result<Spec> {
             status: "t.status",
             table: "delivery_orders"},
         "invoice-approvals" => Spec {
-            source: "invoice_void_requests t JOIN documents d ON d.id=t.invoice_id JOIN users u ON u.id=t.requested_by LEFT JOIN users reviewer ON reviewer.id=t.reviewed_by".into(),
+            source: "invoice_void_requests t JOIN documents d ON d.id=t.invoice_id AND d.deleted_at IS NULL JOIN users u ON u.id=t.requested_by LEFT JOIN users reviewer ON reviewer.id=t.reviewed_by".into(),
             date: "d.date",
             base: "1=1",
             payload: "JSON_OBJECT('id',t.id,'invoice_id',d.id,'invoice_number',d.number,'date',CAST(d.date AS CHAR),'requested_by',u.username,'reviewed_by',reviewer.username,'reason',t.reason,'status',t.status)",
@@ -111,7 +111,7 @@ fn spec(resource: &str, f: &Filters) -> Result<Spec> {
             status: "t.status",
             table: "invoice_void_requests"},
         "delivery-cancellations" => Spec {
-            source: "delivery_cancellation_requests t JOIN delivery_orders o ON o.id=t.delivery_order_id JOIN documents d ON d.id=o.sales_invoice_id JOIN users u ON u.id=t.requested_by LEFT JOIN users reviewer ON reviewer.id=t.reviewed_by".into(),
+            source: "delivery_cancellation_requests t JOIN delivery_orders o ON o.id=t.delivery_order_id AND o.deleted_at IS NULL JOIN documents d ON d.id=o.sales_invoice_id AND d.deleted_at IS NULL JOIN users u ON u.id=t.requested_by LEFT JOIN users reviewer ON reviewer.id=t.reviewed_by".into(),
             date: "o.date",
             base: "1=1",
             payload: "JSON_OBJECT('id',t.id,'delivery_order_id',o.id,'delivery_order_number',CONCAT('DO-',LPAD(o.id,GREATEST(6,CHAR_LENGTH(o.id)),'0')),'invoice_number',d.number,'date',CAST(o.date AS CHAR),'requested_by',u.username,'reviewed_by',reviewer.username,'reason',t.reason,'status',t.status)",
@@ -130,7 +130,7 @@ fn spec(resource: &str, f: &Filters) -> Result<Spec> {
             status: "",
             table: "roles"},
         "users" => Spec {
-            source: "users t JOIN roles r ON r.id=t.role_id".into(),
+            source: "users t JOIN roles r ON r.id=t.role_id AND r.deleted_at IS NULL".into(),
             date: "t.created_at",
             base: "1=1",
             payload: "JSON_OBJECT('id',t.id,'username',t.username,'role_id',t.role_id,'role_name',r.name,'active',t.active,'status',IF(t.active,'Active','Inactive'),'date',DATE_FORMAT(t.created_at,'%Y-%m-%d'))",
@@ -143,7 +143,7 @@ fn spec(resource: &str, f: &Filters) -> Result<Spec> {
             let lead = f.lead_time.unwrap_or(7);
             if !(1..=365).contains(&days) || !(1..=365).contains(&lead) {
                 return Err(bad("Forecast days and lead time must be 1-365"))}
-            let source = format!("(SELECT p.*,COALESCE(s.sold,0)/30.0 daily_sales,p.remaining_quantity-COALESCE(s.sold,0)/30.0*{days} projected_stock,GREATEST(0,CEIL(COALESCE(s.sold,0)/30.0*({days}+{lead})+p.reorder_level-p.remaining_quantity)) suggested_order,CASE WHEN p.remaining_quantity=0 THEN 'Out of stock' WHEN p.remaining_quantity<=COALESCE(s.sold,0)/30.0*{lead} OR p.remaining_quantity<=p.reorder_level THEN 'Reorder now' ELSE 'Healthy' END risk FROM products p LEFT JOIN (SELECT l.product_id,SUM(l.quantity) sold FROM document_lines l JOIN documents d ON d.id=l.document_id WHERE d.kind='sales_invoice' AND d.status<>'Cancelled' AND d.date BETWEEN DATE_SUB(CURRENT_DATE,INTERVAL 29 DAY) AND CURRENT_DATE GROUP BY l.product_id) s ON s.product_id=p.id WHERE p.status='Active') t");
+            let source = format!("(SELECT p.*,COALESCE(s.sold,0)/30.0 daily_sales,p.remaining_quantity-COALESCE(s.sold,0)/30.0*{days} projected_stock,GREATEST(0,CEIL(COALESCE(s.sold,0)/30.0*({days}+{lead})+p.reorder_level-p.remaining_quantity)) suggested_order,CASE WHEN p.remaining_quantity=0 THEN 'Out of stock' WHEN p.remaining_quantity<=COALESCE(s.sold,0)/30.0*{lead} OR p.remaining_quantity<=p.reorder_level THEN 'Reorder now' ELSE 'Healthy' END risk FROM products p LEFT JOIN (SELECT l.product_id,SUM(l.quantity) sold FROM document_lines l JOIN documents d ON d.id=l.document_id WHERE d.deleted_at IS NULL AND l.deleted_at IS NULL AND d.kind='sales_invoice' AND d.status<>'Cancelled' AND d.date BETWEEN DATE_SUB(CURRENT_DATE,INTERVAL 29 DAY) AND CURRENT_DATE GROUP BY l.product_id) s ON s.product_id=p.id WHERE p.deleted_at IS NULL AND p.status='Active') t");
             Spec {
                 source,
                 date: "t.created_at",
@@ -188,7 +188,7 @@ fn conditions(
 ) {
     b.push(" WHERE ")
         .push(s.base)
-        .push(" AND t.id<=")
+        .push(" AND t.deleted_at IS NULL AND t.id<=")
         .push_bind(bound);
     if let Some(from) = &f.from {
         b.push(" AND ")
@@ -231,7 +231,7 @@ fn conditions(
                 .push(" ESCAPE '='");
         }
         if payments_search {
-            b.push(" OR EXISTS(SELECT 1 FROM payment_allocations pa JOIN documents d ON d.id=pa.invoice_id WHERE pa.payment_id=t.id AND d.number LIKE ").push_bind(needle).push(" ESCAPE '=')");
+            b.push(" OR EXISTS(SELECT 1 FROM payment_allocations pa JOIN documents d ON d.id=pa.invoice_id WHERE pa.deleted_at IS NULL AND d.deleted_at IS NULL AND pa.payment_id=t.id AND d.number LIKE ").push_bind(needle).push(" ESCAPE '=')");
         }
         b.push(")");
     }
@@ -296,7 +296,7 @@ pub(crate) async fn list(
             || cursor.bound < 0
             || cursor.id > cursor.bound
             || chrono::NaiveDate::parse_from_str(&cursor.date, "%Y-%m-%d").is_err()
-                && chrono::NaiveDateTime::parse_from_str(&cursor.date, "%Y-%m-%d %H:%M:%S").is_err()
+                && chrono::NaiveDateTime::parse_from_str(&cursor.date, "%Y-%m-%d %H:%M:%S%.f").is_err()
         {
             return Err(bad("Cursor does not match this list and its filters"));
         }
@@ -315,7 +315,7 @@ pub(crate) async fn list(
     let total: i64 = count.build_query_scalar().fetch_one(&a.db).await?;
     let mut query = QueryBuilder::<MySql>::new(format!(
         "SELECT CAST({} AS CHAR) payload,CAST({} AS CHAR) cursor_date,t.id cursor_id FROM {}",
-        s.payload, s.date, s.source
+        format!("JSON_SET({},'$.created_at',CAST(t.created_at AS CHAR),'$.updated_at',CAST(t.updated_at AS CHAR),'$.deleted_at',CAST(t.deleted_at AS CHAR))",s.payload), s.date, s.source
     ));
     conditions(&mut query, &s, &f, bound, search_payments);
     if let Some(cursor) = &cursor {
@@ -371,7 +371,7 @@ pub(crate) async fn list(
         let mut item: Value = serde_json::from_str(&raw).map_err(|_| bad("Invalid list record"))?;
         if resource == "roles" {
             let permissions: Vec<String> = sqlx::query_scalar(
-                "SELECT permission FROM role_permissions WHERE role_id=? ORDER BY permission",
+                "SELECT permission FROM role_permissions WHERE deleted_at IS NULL AND role_id=? ORDER BY permission",
             )
             .bind(item["id"].as_i64())
             .fetch_all(&a.db)

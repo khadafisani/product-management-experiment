@@ -32,7 +32,7 @@ pub(crate) async fn request_void(
     }
     let mut tx = a.db.begin().await?;
     let row: Option<(String, String)> =
-        sqlx::query_as("SELECT kind,status FROM documents WHERE id=? FOR UPDATE")
+        sqlx::query_as("SELECT kind,status FROM documents WHERE deleted_at IS NULL AND id=? FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
@@ -40,7 +40,7 @@ pub(crate) async fn request_void(
         return Err(bad("Active invoice required"));
     }
     let pending: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM invoice_void_requests WHERE invoice_id=? AND status='Pending'",
+        "SELECT COUNT(*) FROM invoice_void_requests WHERE deleted_at IS NULL AND invoice_id=? AND status='Pending'",
     )
     .bind(id)
     .fetch_one(&mut *tx)
@@ -62,8 +62,8 @@ pub(crate) async fn request_void(
 }
 pub(crate) async fn requests(State(a): State<App>) -> Result<Json<Value>> {
     use sqlx::Row;
-    let rows=sqlx::query("SELECT id,invoice_id,requested_by,reason,status,reviewed_by FROM invoice_void_requests ORDER BY id DESC").fetch_all(&a.db).await?;
-    Ok(Json(json!(rows.iter().map(|r|json!({"id":r.get::<i64,_>("id"),"invoice_id":r.get::<i64,_>("invoice_id"),"requested_by":r.get::<i64,_>("requested_by"),"reason":r.get::<String,_>("reason"),"status":r.get::<String,_>("status"),"reviewed_by":r.get::<Option<i64>,_>("reviewed_by")})).collect::<Vec<_>>())))
+    let rows=sqlx::query("SELECT id,invoice_id,requested_by,reason,status,reviewed_by,CAST(created_at AS CHAR) created_at,CAST(updated_at AS CHAR) updated_at,CAST(deleted_at AS CHAR) deleted_at FROM invoice_void_requests WHERE deleted_at IS NULL ORDER BY id DESC").fetch_all(&a.db).await?;
+    Ok(Json(json!(rows.iter().map(|r|json!({"id":r.get::<i64,_>("id"),"invoice_id":r.get::<i64,_>("invoice_id"),"requested_by":r.get::<i64,_>("requested_by"),"reason":r.get::<String,_>("reason"),"status":r.get::<String,_>("status"),"reviewed_by":r.get::<Option<i64>,_>("reviewed_by"),"created_at":r.get::<String,_>("created_at"),"updated_at":r.get::<String,_>("updated_at"),"deleted_at":r.get::<Option<String>,_>("deleted_at")})).collect::<Vec<_>>())))
 }
 pub(crate) async fn approve(
     State(a): State<App>,
@@ -71,7 +71,7 @@ pub(crate) async fn approve(
     Extension(c): Extension<Claims>,
 ) -> Result<Json<Value>> {
     let (invoice, reason): (i64, String) = sqlx::query_as(
-        "SELECT invoice_id,reason FROM invoice_void_requests WHERE id=? AND status='Pending'",
+        "SELECT invoice_id,reason FROM invoice_void_requests WHERE deleted_at IS NULL AND id=? AND status='Pending'",
     )
     .bind(id)
     .fetch_optional(&a.db)
@@ -84,7 +84,7 @@ pub(crate) async fn reject(
     Path(id): Path<i64>,
     Extension(c): Extension<Claims>,
 ) -> Result<Json<Value>> {
-    if sqlx::query("UPDATE invoice_void_requests SET status='Rejected',reviewed_by=? WHERE id=? AND status='Pending'").bind(c.sub).bind(id).execute(&a.db).await?.rows_affected()!=1{return Err(bad("Pending request not found"))}
+    if sqlx::query("UPDATE invoice_void_requests SET status='Rejected',reviewed_by=? WHERE deleted_at IS NULL AND id=? AND status='Pending'").bind(c.sub).bind(id).execute(&a.db).await?.rows_affected()!=1{return Err(bad("Pending request not found"))}
     Ok(Json(json!({"id":id,"status":"Rejected"})))
 }
 async fn void(
@@ -96,7 +96,7 @@ async fn void(
 ) -> Result<Value> {
     let mut tx = a.db.begin().await?;
     let (kind, status, released, po): (String, String, bool, Option<i64>) = sqlx::query_as(
-        "SELECT kind,status,stock_released,purchase_order_id FROM documents WHERE id=? FOR UPDATE",
+        "SELECT kind,status,stock_released,purchase_order_id FROM documents WHERE deleted_at IS NULL AND id=? FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
@@ -107,7 +107,7 @@ async fn void(
     }
     if let Some(req) = request {
         let (s,): (String,) =
-            sqlx::query_as("SELECT status FROM invoice_void_requests WHERE id=? FOR UPDATE")
+            sqlx::query_as("SELECT status FROM invoice_void_requests WHERE deleted_at IS NULL AND id=? FOR UPDATE")
                 .bind(req)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -122,7 +122,7 @@ async fn void(
         crate::feature::purchase_order::service::validate_link(&mut tx, po).await?;
     }
     let deliveries: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM delivery_orders WHERE sales_invoice_id=? AND status<>'Cancelled'",
+        "SELECT COUNT(*) FROM delivery_orders WHERE deleted_at IS NULL AND sales_invoice_id=? AND status<>'Cancelled'",
     )
     .bind(id)
     .fetch_one(&mut *tx)
@@ -133,7 +133,7 @@ async fn void(
         ));
     }
     let ls: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT product_id,quantity FROM document_lines WHERE document_id=? ORDER BY product_id",
+        "SELECT product_id,quantity FROM document_lines WHERE deleted_at IS NULL AND document_id=? ORDER BY product_id",
     )
     .bind(id)
     .fetch_all(&mut *tx)
@@ -161,7 +161,7 @@ async fn void(
     if let Some(po) = po {
         crate::feature::purchase_order::service::refresh_status(&mut tx, po).await?
     }
-    let (refund,):(i64,)=sqlx::query_as("SELECT CAST(COALESCE(SUM(amount),0) AS SIGNED) FROM payment_allocations WHERE invoice_id=?").bind(id).fetch_one(&mut *tx).await?;
+    let (refund,):(i64,)=sqlx::query_as("SELECT CAST(COALESCE(SUM(amount),0) AS SIGNED) FROM payment_allocations WHERE deleted_at IS NULL AND invoice_id=?").bind(id).fetch_one(&mut *tx).await?;
     sqlx::query(
         "INSERT INTO invoice_voids(invoice_id,reason,reviewed_by,refund_due) VALUES(?,?,?,?)",
     )
@@ -174,15 +174,15 @@ async fn void(
     if kind == "sales_invoice" {
         sqlx::query("INSERT INTO sales_invoice_cancellations(sales_invoice_id,reason,refund_due) VALUES(?,?,?)").bind(id).bind(reason).bind(refund).execute(&mut *tx).await?;
     }
-    sqlx::query("UPDATE documents SET status='Cancelled',remaining_payment=0 WHERE id=?")
+    sqlx::query("UPDATE documents SET status='Cancelled',remaining_payment=0 WHERE deleted_at IS NULL AND id=?")
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE document_lines SET status='Cancelled' WHERE document_id=?")
+    sqlx::query("UPDATE document_lines SET status='Cancelled' WHERE deleted_at IS NULL AND document_id=?")
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE invoice_void_requests SET status='Approved',reviewed_by=? WHERE invoice_id=? AND status='Pending'").bind(reviewer).bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE invoice_void_requests SET status='Approved',reviewed_by=? WHERE deleted_at IS NULL AND invoice_id=? AND status='Pending'").bind(reviewer).bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(json!({"id":id,"status":"Cancelled","refund_due":refund}))
 }
@@ -208,7 +208,7 @@ pub(crate) async fn update(
     }
     let mut tx = a.db.begin().await?;
     let (kind, status, po, released): (String, String, Option<i64>, bool) = sqlx::query_as(
-        "SELECT kind,status,purchase_order_id,stock_released FROM documents WHERE id=? FOR UPDATE",
+        "SELECT kind,status,purchase_order_id,stock_released FROM documents WHERE deleted_at IS NULL AND id=? FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
@@ -220,12 +220,12 @@ pub(crate) async fn update(
     if let Some(lines) = d.lines {
         let total = crate::feature::document::validation::total(&lines)?;
         let payments: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM payment_allocations WHERE invoice_id=?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM payment_allocations WHERE deleted_at IS NULL AND invoice_id=?")
                 .bind(id)
                 .fetch_one(&mut *tx)
                 .await?;
         let deliveries: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM delivery_orders WHERE sales_invoice_id=?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM delivery_orders WHERE deleted_at IS NULL AND sales_invoice_id=?")
                 .bind(id)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -240,7 +240,7 @@ pub(crate) async fn update(
         if let Some(po) = po {
             crate::feature::purchase_order::service::validate_link(&mut tx, po).await?;
         }
-        let old:Vec<(i64,i64)>=sqlx::query_as("SELECT product_id,quantity FROM document_lines WHERE document_id=? ORDER BY product_id").bind(id).fetch_all(&mut *tx).await?;
+        let old:Vec<(i64,i64)>=sqlx::query_as("SELECT product_id,quantity FROM document_lines WHERE deleted_at IS NULL AND document_id=? ORDER BY product_id").bind(id).fetch_all(&mut *tx).await?;
         let mut products = std::collections::BTreeSet::new();
         for (p, _) in &old {
             products.insert(*p);
@@ -283,7 +283,7 @@ pub(crate) async fn update(
                     .await?;
             }
         }
-        sqlx::query("DELETE FROM document_lines WHERE document_id=?")
+        sqlx::query("UPDATE document_lines SET deleted_at=CURRENT_TIMESTAMP(6) WHERE deleted_at IS NULL AND document_id=?")
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -302,14 +302,14 @@ pub(crate) async fn update(
         if let Some(po) = po {
             crate::feature::purchase_order::service::refresh_status(&mut tx, po).await?;
         }
-        sqlx::query("UPDATE documents SET grand_total=?,remaining_payment=? WHERE id=?")
+        sqlx::query("UPDATE documents SET grand_total=?,remaining_payment=? WHERE deleted_at IS NULL AND id=?")
             .bind(total)
             .bind(total)
             .bind(id)
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query("UPDATE documents SET number=?,date=?,person=? WHERE id=?")
+    sqlx::query("UPDATE documents SET updated_at=CURRENT_TIMESTAMP(6),number=?,date=?,person=? WHERE deleted_at IS NULL AND id=?")
         .bind(d.number.trim())
         .bind(d.date)
         .bind(d.person.trim())

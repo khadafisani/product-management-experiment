@@ -7,14 +7,14 @@ use crate::{
 use serde_json::{Value, json};
 
 pub(crate) async fn products(a: App) -> Result<Vec<Product>> {
-    Ok(sqlx::query_as("SELECT id,name,quantity,remaining_quantity,status,photo,description,price,reorder_level FROM products ORDER BY id DESC").fetch_all(&a.db).await?)
+    Ok(sqlx::query_as("SELECT id,name,quantity,remaining_quantity,status,photo,description,price,reorder_level,CAST(created_at AS CHAR) created_at,CAST(updated_at AS CHAR) updated_at,CAST(deleted_at AS CHAR) deleted_at FROM products WHERE deleted_at IS NULL ORDER BY id DESC").fetch_all(&a.db).await?)
 }
 pub(crate) async fn save_product(a: App, p: ProductInput) -> Result<Value> {
     super::validation::validate(&p)?;
     let mut tx = a.db.begin().await?;
     let id = if p.id > 0 {
         let old: Option<(i64, i64)> = sqlx::query_as(
-            "SELECT quantity,remaining_quantity FROM products WHERE id=? FOR UPDATE",
+            "SELECT quantity,remaining_quantity FROM products WHERE deleted_at IS NULL AND id=? FOR UPDATE",
         )
         .bind(p.id)
         .fetch_optional(&mut *tx)
@@ -31,7 +31,7 @@ pub(crate) async fn save_product(a: App, p: ProductInput) -> Result<Value> {
                 "Remaining quantity must be between zero and physical stock",
             ));
         }
-        sqlx::query("UPDATE products SET name=?,status=?,photo=?,description=?,price=?,reorder_level=? WHERE id=?").bind(p.name.trim()).bind(&p.status).bind(&p.photo).bind(&p.description).bind(p.price).bind(p.reorder_level).bind(p.id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE products SET updated_at=CURRENT_TIMESTAMP(6),name=?,status=?,photo=?,description=?,price=?,reorder_level=? WHERE deleted_at IS NULL AND id=?").bind(p.name.trim()).bind(&p.status).bind(&p.photo).bind(&p.description).bind(p.price).bind(p.reorder_level).bind(p.id).execute(&mut *tx).await?;
         adjust_stock(
             &mut tx,
             p.id,
@@ -60,7 +60,7 @@ pub(crate) async fn adjust_stock(
     reason: &str,
 ) -> Result<()> {
     let (physical, available): (i64, i64) =
-        sqlx::query_as("SELECT quantity,remaining_quantity FROM products WHERE id=? FOR UPDATE")
+        sqlx::query_as("SELECT quantity,remaining_quantity FROM products WHERE deleted_at IS NULL AND id=? FOR UPDATE")
             .bind(product)
             .fetch_one(&mut **tx)
             .await?;
@@ -75,7 +75,7 @@ pub(crate) async fn adjust_stock(
             "Insufficient remaining quantity or invalid stock adjustment",
         ));
     }
-    sqlx::query("UPDATE products SET quantity=?,remaining_quantity=? WHERE id=?")
+    sqlx::query("UPDATE products SET quantity=?,remaining_quantity=? WHERE deleted_at IS NULL AND id=?")
         .bind(new_physical)
         .bind(new_available)
         .bind(product)
@@ -91,13 +91,11 @@ pub(crate) async fn lookup_product(
     l: &LineInput,
 ) -> Result<Option<Product>> {
     if l.product_id > 0 {
-        let product=sqlx::query_as("SELECT id,name,quantity,remaining_quantity,status,photo,description,price,reorder_level FROM products WHERE id=? FOR UPDATE")
+        let product=sqlx::query_as("SELECT id,name,quantity,remaining_quantity,status,photo,description,price,reorder_level,CAST(created_at AS CHAR) created_at,CAST(updated_at AS CHAR) updated_at,CAST(deleted_at AS CHAR) deleted_at FROM products WHERE deleted_at IS NULL AND id=? FOR UPDATE")
             .bind(l.product_id).fetch_optional(&mut **tx).await?;
-        if product.is_some() {
-            return Ok(product);
-        }
+        return Ok(product);
     }
     let name = new_product_name(l)?;
-    Ok(sqlx::query_as("SELECT id,name,quantity,remaining_quantity,status,photo,description,price,reorder_level FROM products WHERE name=? FOR UPDATE")
+    Ok(sqlx::query_as("SELECT id,name,quantity,remaining_quantity,status,photo,description,price,reorder_level,CAST(created_at AS CHAR) created_at,CAST(updated_at AS CHAR) updated_at,CAST(deleted_at AS CHAR) deleted_at FROM products WHERE deleted_at IS NULL AND name=? FOR UPDATE")
         .bind(name).fetch_optional(&mut **tx).await?)
 }

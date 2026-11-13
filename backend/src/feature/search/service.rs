@@ -27,7 +27,11 @@ pub(crate) async fn search(a: App, q: Search) -> Result<Value> {
         .await;
     match result {
         Ok(r) if r.status().is_success() => {
-            Ok(r.json().await.map_err(|_| bad("Invalid search response"))?)
+            active_hits(
+                &a,
+                r.json().await.map_err(|_| bad("Invalid search response"))?,
+            )
+            .await
         }
         _ => Err(Error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -37,7 +41,7 @@ pub(crate) async fn search(a: App, q: Search) -> Result<Value> {
 }
 pub(crate) async fn reindex(a: App) -> Result<Value> {
     let ps: Vec<Product> = sqlx::query_as(
-        "SELECT id,name,quantity,remaining_quantity,status,photo,description,price,reorder_level FROM products",
+        "SELECT id,name,quantity,remaining_quantity,status,photo,description,price,reorder_level,CAST(created_at AS CHAR) created_at,CAST(updated_at AS CHAR) updated_at,CAST(deleted_at AS CHAR) deleted_at FROM products WHERE deleted_at IS NULL",
     )
     .fetch_all(&a.db)
     .await?;
@@ -58,4 +62,32 @@ pub(crate) async fn reindex(a: App) -> Result<Value> {
     Ok(r.json()
         .await
         .map_err(|_| bad("Invalid indexing response"))?)
+}
+
+// Indexing is asynchronous. Recheck hit IDs against the source of truth so a
+// deleted product cannot leak through a stale index, even before the next sync.
+pub(crate) async fn active_hits(a: &App, mut data: Value) -> Result<Value> {
+    if let Some(hits) = data.get_mut("hits").and_then(Value::as_array_mut) {
+        let ids: Vec<i64> = hits.iter().filter_map(|r| r["id"].as_i64()).collect();
+        if ids.is_empty() {
+            hits.clear();
+            return Ok(data);
+        }
+        let mut query = sqlx::QueryBuilder::<sqlx::MySql>::new(
+            "SELECT id FROM products WHERE deleted_at IS NULL AND id IN (",
+        );
+        let mut list = query.separated(",");
+        for id in ids {
+            list.push_bind(id);
+        }
+        list.push_unseparated(")");
+        let live: std::collections::HashSet<i64> = query
+            .build_query_scalar::<i64>()
+            .fetch_all(&a.db)
+            .await?
+            .into_iter()
+            .collect();
+        hits.retain(|r| r["id"].as_i64().is_some_and(|id| live.contains(&id)));
+    }
+    Ok(data)
 }

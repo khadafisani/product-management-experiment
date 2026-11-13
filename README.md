@@ -313,3 +313,27 @@ backend/src/tests/
 The JWT and yearly seeder test files are included by their owning modules under `cfg(test)` so they can test private helpers without exposing production internals. They are not compiled into release builds. Run all backend tests, including the temporary-MySQL workflows, with `cargo test --all-targets -- --include-ignored` from `backend`.
 
 Frontend browser tests live in `frontend/tests/`: `demo.e2e.ts` and `lists.e2e.ts`. Run `npx playwright test --workers=1` from `frontend` (uses installed Google Chrome). The demo route remains in `src/routes/demo/playwright/`; its test file is now in the shared test folder.
+
+
+## Lifecycle timestamps and soft deletion
+
+Migration `0007_lifecycle_metadata.sql` adds database-managed `created_at`, `updated_at` and nullable `deleted_at` to all application tables. Creation/update timestamps use microsecond precision. Inserts receive defaults; updates that change a stored value automatically advance `updated_at`. Existing creation times are preserved, existing update times start from creation time, and records without historical creation metadata receive the migration time. Idempotency creation times are converted from epoch seconds without changing their age. Schema migration bookkeeping (`_sqlx_migrations`) is managed by SQLx and is not altered.
+
+Normal lists, detail pages, related-record queries, forecasts, product lookup, authentication and search exclude deleted records. Tombstones retain their original identifiers and unique document/product/user names remain reserved. Editing invoice/delivery details soft-deletes the previous detail rows and inserts live replacements; active-only uniqueness keeps historical versions without allowing duplicate active products/details. Permission assignment changes retain removed assignments and reactivate the existing assignment if it is granted again. The append-only stock ledger and void/refund records remain audit history.
+
+Soft-delete APIs (all require `Content-Type: application/json`, an `Idempotency-Key`, and the existing permission):
+
+| DELETE endpoint | Permission | Rules |
+|---|---|---|
+| `/api/products/{id}` | `products.write` | Zero stock and no active document references |
+| `/api/documents/{id}` | `invoices.void` | Invoices must first be voided through the existing Finance workflow; purchase orders must have no live linked invoices |
+| `/api/payments/{id}` | `payments.write` | Reverses active allocations and restores balances atomically; purchase availability is reversed when needed; refuses deletion if stock has been consumed, deliveries would become unpaid, or refund audit would be affected |
+| `/api/delivery-orders/{id}` | `delivery.write` | Draft or already-cancelled orders only; approved orders require Finance cancellation first; delivered orders remain audit history |
+| `/api/users/{id}` | `roles.manage` | Revokes sessions; cannot delete the current account or seeded admin |
+| `/api/roles/{id}` | `roles.manage` | Custom roles without live users only; built-in roles are protected |
+
+Deleted records return 404 through detail/delete endpoints. Replaying the same successful deletion key returns its original success without running side effects again. Deleting a document/order also timestamps its live detail rows; archiving a voided invoice also archives its cancelled deliveries. Voiding/cancelling a record remains a business status transition and does not itself hide it. Deletion controls have not been added to the frontend; these rules are enforced by the backend APIs.
+
+Expired authentication sessions, refresh-token children, completed idempotency records and old login-attempt records continue to be physically purged by their existing retention job. Soft-deleting operational data must not disable security cleanup. There is no restore endpoint yet.
+
+Lifecycle regression tests are in `backend/src/tests/lifecycle.rs`, covering migration backfill, timestamp defaults and updates, tombstones and idempotent retries, historical line versions, payment/stock rollback, delivery safeguards and revoked access for deleted users.

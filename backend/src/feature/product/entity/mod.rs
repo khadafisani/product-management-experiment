@@ -7,6 +7,12 @@ pub(crate) fn ten() -> i64 {
 }
 #[derive(Serialize, sqlx::FromRow)]
 pub(crate) struct Product {
+    #[sqlx(default)]
+    pub(crate) created_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) updated_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) deleted_at: Option<String>,
     pub(crate) id: i64,
     pub(crate) name: String,
     pub(crate) quantity: i64,

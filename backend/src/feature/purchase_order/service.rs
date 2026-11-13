@@ -18,7 +18,7 @@ pub(crate) async fn validate_link(
     po: i64,
 ) -> Result<()> {
     use crate::helper::bad;
-    let k: Option<(String,)> = sqlx::query_as("SELECT kind FROM documents WHERE id=? FOR UPDATE")
+    let k: Option<(String,)> = sqlx::query_as("SELECT kind FROM documents WHERE deleted_at IS NULL AND id=? FOR UPDATE")
         .bind(po)
         .fetch_optional(&mut **tx)
         .await?;
@@ -35,7 +35,7 @@ pub(crate) async fn realize_line(
     l: &crate::feature::document::entity::LineInput,
 ) -> Result<()> {
     use crate::helper::bad;
-    let line:Option<(i64,i64)>=sqlx::query_as("SELECT id,realized_quantity FROM document_lines WHERE document_id=? AND product_id=? FOR UPDATE").bind(po).bind(p.id).fetch_optional(&mut **tx).await?;
+    let line:Option<(i64,i64)>=sqlx::query_as("SELECT id,realized_quantity FROM document_lines WHERE deleted_at IS NULL AND document_id=? AND product_id=? FOR UPDATE").bind(po).bind(p.id).fetch_optional(&mut **tx).await?;
     let (line_id, left) = if let Some(line) = line {
         line
     } else {
@@ -47,7 +47,7 @@ pub(crate) async fn realize_line(
     let next = left
         .checked_sub(l.quantity)
         .ok_or_else(|| bad("Quantity too large"))?;
-    sqlx::query("UPDATE document_lines SET realized_quantity=?,status=? WHERE id=?")
+    sqlx::query("UPDATE document_lines SET realized_quantity=?,status=? WHERE deleted_at IS NULL AND id=?")
         .bind(next)
         .bind(if next < 0 {
             "Warning"
@@ -66,7 +66,7 @@ pub(crate) async fn refresh_status(
     tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
     po: i64,
 ) -> Result<()> {
-    sqlx::query("UPDATE documents SET status=CASE WHEN EXISTS(SELECT 1 FROM document_lines WHERE document_id=? AND realized_quantity<0) THEN 'Warning' WHEN NOT EXISTS(SELECT 1 FROM document_lines WHERE document_id=? AND realized_quantity<>0) THEN 'Complete' WHEN NOT EXISTS(SELECT 1 FROM document_lines WHERE document_id=? AND realized_quantity<>quantity) THEN 'Open' ELSE 'Partial' END WHERE id=?").bind(po).bind(po).bind(po).bind(po).execute(&mut **tx).await?;
+    sqlx::query("UPDATE documents SET status=CASE WHEN EXISTS(SELECT 1 FROM document_lines WHERE deleted_at IS NULL AND document_id=? AND realized_quantity<0) THEN 'Warning' WHEN NOT EXISTS(SELECT 1 FROM document_lines WHERE deleted_at IS NULL AND document_id=? AND realized_quantity<>0) THEN 'Complete' WHEN NOT EXISTS(SELECT 1 FROM document_lines WHERE deleted_at IS NULL AND document_id=? AND realized_quantity<>quantity) THEN 'Open' ELSE 'Partial' END WHERE id=?").bind(po).bind(po).bind(po).bind(po).execute(&mut **tx).await?;
     Ok(())
 }
 
@@ -77,6 +77,6 @@ pub(crate) async fn restore_line(
     product: i64,
     quantity: i64,
 ) -> Result<()> {
-    sqlx::query("UPDATE document_lines SET realized_quantity=realized_quantity+?,status=CASE WHEN realized_quantity<0 THEN 'Warning' WHEN realized_quantity=0 THEN 'Complete' WHEN realized_quantity=quantity THEN 'Open' ELSE 'Partial' END WHERE document_id=? AND product_id=?").bind(quantity).bind(po).bind(product).execute(&mut **tx).await?;
+    sqlx::query("UPDATE document_lines SET realized_quantity=realized_quantity+?,status=CASE WHEN realized_quantity<0 THEN 'Warning' WHEN realized_quantity=0 THEN 'Complete' WHEN realized_quantity=quantity THEN 'Open' ELSE 'Partial' END WHERE deleted_at IS NULL AND document_id=? AND product_id=?").bind(quantity).bind(po).bind(product).execute(&mut **tx).await?;
     Ok(())
 }

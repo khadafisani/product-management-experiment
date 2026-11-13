@@ -9,7 +9,7 @@ use crate::feature::{
 use axum::{
     Json, Router,
     extract::State,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde_json::{Value, json};
 use std::env;
@@ -27,6 +27,9 @@ pub(crate) async fn health(State(a): State<App>) -> Json<Value> {
 }
 pub(crate) fn router(app: App, origin: axum::http::HeaderValue) -> Router {
     Router::new()
+        .route("/api/void-requests/{id}", get(crate::feature::related::invoice_approval))
+        .route("/api/delivery-cancellation-requests/{id}", get(crate::feature::related::delivery_approval))
+        .route("/api/users/{id}", delete(crate::feature::lifecycle::user))
         .route(
             "/api/lists/{resource}",
             get(crate::feature::pagination::list),
@@ -67,7 +70,10 @@ pub(crate) fn router(app: App, origin: axum::http::HeaderValue) -> Router {
             "/api/users",
             get(crate::feature::auth::users).post(crate::feature::auth::create_user),
         )
-        .route("/api/roles/{id}", post(crate::feature::auth::update_role))
+        .route(
+            "/api/roles/{id}",
+            post(crate::feature::auth::update_role).delete(crate::feature::lifecycle::role),
+        )
         .route(
             "/api/users/{id}/role",
             post(crate::feature::auth::user_role),
@@ -98,7 +104,9 @@ pub(crate) fn router(app: App, origin: axum::http::HeaderValue) -> Router {
         )
         .route(
             "/api/delivery-orders/{id}",
-            get(crate::feature::related::delivery).post(crate::feature::delivery::update),
+            get(crate::feature::related::delivery)
+                .post(crate::feature::delivery::update)
+                .delete(crate::feature::lifecycle::delivery),
         )
         .route(
             "/api/delivery-orders/{id}/approve",
@@ -133,14 +141,20 @@ pub(crate) fn router(app: App, origin: axum::http::HeaderValue) -> Router {
         .route("/api/documents/preview", post(preview_document))
         .route(
             "/api/documents/{id}",
-            get(crate::feature::related::document),
+            get(crate::feature::related::document).delete(crate::feature::lifecycle::document),
         )
         .route(
             "/api/payments",
             get(crate::feature::related::payments).post(pay),
         )
-        .route("/api/payments/{id}", get(crate::feature::related::payment))
-        .route("/api/products/{id}", get(crate::feature::related::product))
+        .route(
+            "/api/payments/{id}",
+            get(crate::feature::related::payment).delete(crate::feature::lifecycle::payment),
+        )
+        .route(
+            "/api/products/{id}",
+            get(crate::feature::related::product).delete(crate::feature::lifecycle::product),
+        )
         .route("/api/forecast", get(forecast))
         .route("/api/search", get(search))
         .route("/api/search/reindex", post(reindex))
@@ -160,7 +174,11 @@ pub(crate) fn router(app: App, origin: axum::http::HeaderValue) -> Router {
         .layer(
             CorsLayer::new()
                 .allow_origin(origin)
-                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::DELETE,
+                ])
                 .allow_headers([
                     axum::http::header::CONTENT_TYPE,
                     axum::http::HeaderName::from_static("idempotency-key"),

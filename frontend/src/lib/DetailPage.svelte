@@ -3,6 +3,7 @@
 	import { api, money } from './api';
 	import { user, detailNavigation } from './auth';
 	import RelatedRecords from './RelatedRecords.svelte';
+	import RecordTimestamps from './RecordTimestamps.svelte';
 	let { category, id }: { category: 'document' | 'payment' | 'product' | 'delivery'; id: string } =
 		$props();
 	let data = $state<any>(null),
@@ -271,6 +272,7 @@
 						>{/if}{/if}
 			</div>
 		</header>
+		<RecordTimestamps record={data.document ?? data.payment ?? data.product ?? data.order} />
 		{#if editing}<form onsubmit={save} class="detail-edit">
 				<h2>{category === 'document' ? 'Edit invoice' : 'Edit delivery draft'}</h2>
 				<div class="fields">

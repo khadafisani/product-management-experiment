@@ -112,6 +112,7 @@ struct Item {
 impl Item {
     fn entity(&self) -> Product {
         Product {
+            created_at:None,updated_at:None,deleted_at:None,
             id: self.id,
             name: self.name.clone(),
             price: self.price,

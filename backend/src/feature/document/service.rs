@@ -9,13 +9,13 @@ pub(crate) async fn documents(a: App) -> Result<Vec<Document>> {
 }
 pub(crate) async fn detail(a: App, id: i64) -> Result<Value> {
     let doc: Option<Document> = sqlx
-        ::query_as(&format!("{DOC_SELECT} WHERE id=?"))
+        ::query_as(&format!("{DOC_SELECT} AND id=?"))
         .bind(id)
         .fetch_optional(&a.db).await?;
     let doc = doc.ok_or_else(|| bad("Document not found"))?;
     let lines: Vec<Line> = sqlx
         ::query_as(
-            "SELECT id,product_id,item_name,quantity,realized_quantity,delivered_quantity,on_delivery_quantity,price,subtotal,status FROM document_lines WHERE document_id=? ORDER BY id"
+            "SELECT id,product_id,item_name,quantity,realized_quantity,delivered_quantity,on_delivery_quantity,price,subtotal,status,CAST(created_at AS CHAR) created_at,CAST(updated_at AS CHAR) updated_at,CAST(deleted_at AS CHAR) deleted_at FROM document_lines WHERE deleted_at IS NULL AND document_id=? ORDER BY id"
         )
         .bind(id)
         .fetch_all(&a.db).await?;
@@ -25,7 +25,7 @@ pub(crate) async fn detail(a: App, id: i64) -> Result<Value> {
         .sum();
     let allocations = sqlx
         ::query(
-            "SELECT p.id,p.reference,CAST(p.date AS CHAR) date,pa.amount FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.invoice_id=? ORDER BY p.date DESC,p.id DESC"
+            "SELECT p.id,p.reference,CAST(p.date AS CHAR) date,pa.amount FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.deleted_at IS NULL AND p.deleted_at IS NULL AND pa.invoice_id=? ORDER BY p.date DESC,p.id DESC"
         )
         .bind(id)
         .fetch_all(&a.db).await?;
@@ -121,6 +121,7 @@ pub(crate) async fn create_document(a: App, mut d: DocumentInput) -> Result<Valu
                 .last_insert_id() as i64;
             created_products.push(json!({"id":product_id,"name":name}));
             Product {
+                created_at: None,updated_at:None,deleted_at:None,
                 id: product_id,
                 name,
                 quantity: 0,
