@@ -276,3 +276,40 @@ Browser regression checks: from `frontend`, run `npx playwright test tests/lists
 Delivery list rows use a labelled view icon and an overflow action menu. The menu keeps clear action names, highlights cancellation in red, preserves role/status checks, supports keyboard navigation and Escape, and closes when clicking outside. Finalized deliveries only show the view action. Native popovers keep menus visible outside the table's horizontal viewport.
 
 List layouts share full-width content gutters, compact 8px cell padding, continuous horizontal row separators and synchronized sticky headings. Products, forecasts, documents, payments, deliveries, approvals and role/user administration use the same icon actions; secondary actions remain labelled in the menu. Product descriptions truncate to one line in lists, and purchase-order reference badges use a compact second line. Browser regressions cover every list at desktop width, narrow viewport overflow/alignment, and approval/delivery action menus.
+
+
+## Seeder files
+
+All seeder code and read-only SQL reconciliation scripts live in `backend/seeds/`:
+
+```text
+backend/seeds/
+  mod.rs           Shared Rust seeder module
+  auth.rs          Built-in roles, permissions and demo accounts
+  year.rs          Full-year demo generator
+  seed.rs          Small demo dataset command
+  seed_year.rs     Full-year dataset command
+  verify.sql       Small demo reconciliation checks
+  verify_year.sql  Full-year reconciliation checks
+```
+
+Cargo registers the two command entry points explicitly, so existing commands remain `cargo run --bin seed` and `cargo run --bin seed_year` from `backend`. The library and tests reference shared helpers through `backend::seeds` / `crate::seeds`. Schema migrations, including `0005_seed_runs.sql`, stay in `backend/migrations/`; they create tables rather than populate demo records.
+
+
+## Test files
+
+Backend tests are grouped in `backend/src/tests/`:
+
+```text
+backend/src/tests/
+  mod.rs                   Test module registration
+  validation.rs            Invoice line and payment allocation rules
+  integration_tests.rs     Migrations and connected business workflows
+  auth_delivery_tests.rs   Authentication, RBAC, idempotency, deliveries and pagination
+  jwt.rs                   JWT validation
+  year_seed.rs             Full-year seeder reconciliation, concurrency and reruns
+```
+
+The JWT and yearly seeder test files are included by their owning modules under `cfg(test)` so they can test private helpers without exposing production internals. They are not compiled into release builds. Run all backend tests, including the temporary-MySQL workflows, with `cargo test --all-targets -- --include-ignored` from `backend`.
+
+Frontend browser tests live in `frontend/tests/`: `demo.e2e.ts` and `lists.e2e.ts`. Run `npx playwright test --workers=1` from `frontend` (uses installed Google Chrome). The demo route remains in `src/routes/demo/playwright/`; its test file is now in the shared test folder.

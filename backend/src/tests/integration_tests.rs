@@ -44,7 +44,7 @@ async fn migration_preserves_existing_inventory_without_releasing_it_twice() {
         .connect_with(options.database(&name))
         .await
         .unwrap();
-    sqlx::raw_sql(include_str!("../migrations/0001_initial.sql"))
+    sqlx::raw_sql(include_str!("../../migrations/0001_initial.sql"))
         .execute(&db)
         .await
         .unwrap();
@@ -56,7 +56,7 @@ async fn migration_preserves_existing_inventory_without_releasing_it_twice() {
     .execute(&db)
     .await
     .unwrap();
-    sqlx::raw_sql(include_str!("../migrations/0002_remaining_quantity.sql"))
+    sqlx::raw_sql(include_str!("../../migrations/0002_remaining_quantity.sql"))
         .execute(&db)
         .await
         .unwrap();

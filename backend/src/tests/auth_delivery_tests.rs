@@ -84,8 +84,8 @@ async fn auth_permissions_idempotency_and_delivery_workflow() {
         .await
         .unwrap();
     sqlx::migrate!().run(&db).await.unwrap();
-    crate::auth_seed::seed_auth(&db).await.unwrap();
-    crate::auth_seed::seed_auth(&db).await.unwrap();
+    crate::seeds::auth::seed_auth(&db).await.unwrap();
+    crate::seeds::auth::seed_auth(&db).await.unwrap();
     let a = App {
         db: db.clone(),
         http: reqwest::Client::new(),
@@ -957,7 +957,7 @@ async fn cursor_lists_filters_snapshot_and_approval_numbers() {
         .await
         .unwrap();
     sqlx::migrate!().run(&db).await.unwrap();
-    crate::auth_seed::seed_auth(&db).await.unwrap();
+    crate::seeds::auth::seed_auth(&db).await.unwrap();
     let app = router(
         App {
             db: db.clone(),

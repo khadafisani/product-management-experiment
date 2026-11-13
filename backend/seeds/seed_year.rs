@@ -35,8 +35,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect(&std::env::var("DATABASE_URL")?)
         .await?;
     sqlx::migrate!().run(&db).await?;
-    backend::auth_seed::seed_auth(&db).await?;
-    let result = backend::demo_year_seed::seed_year(&db, end).await?;
+    backend::seeds::auth::seed_auth(&db).await?;
+    let result = backend::seeds::year::seed_year(&db, end).await?;
     println!(
         "{}",
         if result.inserted {

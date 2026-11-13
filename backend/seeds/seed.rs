@@ -429,7 +429,7 @@ async fn main() -> Result<()> {
         })
         .connect(&url).await?;
     sqlx::migrate!().run(&db).await?;
-    backend::auth_seed::seed_auth(&db).await?;
+    backend::seeds::auth::seed_auth(&db).await?;
     println!("Role accounts available: admin, staff, finance (password: asdqwe123!). Existing accounts preserved.");
     let changed = seed(&db).await?;
     println!("{}", if changed {

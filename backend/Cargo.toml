@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2024"
 default-run = "backend"
 
+# Keep executable seeders alongside their shared code and SQL checks.
+[[bin]]
+name = "seed"
+path = "seeds/seed.rs"
+
+[[bin]]
+name = "seed_year"
+path = "seeds/seed_year.rs"
+
 [dependencies]
 axum = "0.8.9"
 dotenvy = "0.15.7"
