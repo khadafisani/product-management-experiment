@@ -47,9 +47,10 @@
 			></thead
 		><tbody
 			>{#each requests as r}<tr
-					><td>#{r.id}</td><td>#{r.invoice_id}</td><td>#{r.requested_by}</td><td>{r.reason}</td><td
-						>{r.status}</td
-					><td
+					><td>#{r.id}</td><td
+						><a class="record-link" href={`/documents/${r.invoice_id}/`}>Invoice #{r.invoice_id}</a
+						></td
+					><td>#{r.requested_by}</td><td>{r.reason}</td><td>{r.status}</td><td
 						>{#if r.status === 'Pending' && $user?.permissions.includes('invoices.void')}<button
 								disabled={busy}
 								onclick={() => review(r.id, 'approve')}>Approve void</button
@@ -68,9 +69,11 @@
 			></thead
 		><tbody
 			>{#each cancellations as r}<tr
-					><td>#{r.id}</td><td>#{r.delivery_order_id}</td><td>#{r.requested_by}</td><td
-						>{r.reason}</td
-					><td>{r.status}</td><td
+					><td>#{r.id}</td><td
+						><a class="record-link" href={`/delivery-orders/${r.delivery_order_id}/`}
+							>Delivery #{r.delivery_order_id}</a
+						></td
+					><td>#{r.requested_by}</td><td>{r.reason}</td><td>{r.status}</td><td
 						>{#if r.status === 'Pending' && $user?.permissions.includes('delivery.approve')}<button
 								disabled={busy}
 								onclick={() => review(r.id, 'approve', true)}>Approve cancellation</button

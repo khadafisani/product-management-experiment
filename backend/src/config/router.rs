@@ -1,8 +1,8 @@
 use super::App;
 use crate::feature::{
-    document::controller::{create_document, detail, documents, preview_document},
+    document::controller::{create_document, documents, preview_document},
     forecast::controller::forecast,
-    payment::controller::{pay, payments},
+    payment::controller::pay,
     product::controller::{products, save_product},
     search::controller::{reindex, search},
 };
@@ -94,7 +94,7 @@ pub(crate) fn router(app: App, origin: axum::http::HeaderValue) -> Router {
         )
         .route(
             "/api/delivery-orders/{id}",
-            get(crate::feature::delivery::detail).post(crate::feature::delivery::update),
+            get(crate::feature::related::delivery).post(crate::feature::delivery::update),
         )
         .route(
             "/api/delivery-orders/{id}/approve",
@@ -127,14 +127,28 @@ pub(crate) fn router(app: App, origin: axum::http::HeaderValue) -> Router {
         .route("/api/products", get(products).post(save_product))
         .route("/api/documents", get(documents).post(create_document))
         .route("/api/documents/preview", post(preview_document))
-        .route("/api/documents/{id}", get(detail))
-        .route("/api/payments", get(payments).post(pay))
+        .route(
+            "/api/documents/{id}",
+            get(crate::feature::related::document),
+        )
+        .route(
+            "/api/payments",
+            get(crate::feature::related::payments).post(pay),
+        )
+        .route("/api/payments/{id}", get(crate::feature::related::payment))
+        .route("/api/products/{id}", get(crate::feature::related::product))
         .route("/api/forecast", get(forecast))
         .route("/api/search", get(search))
         .route("/api/search/reindex", post(reindex))
-        .fallback_service(tower_http::services::ServeDir::new(
-            env::var("STATIC_DIR").unwrap_or("../frontend/build".into()),
-        ))
+        .fallback_service(
+            tower_http::services::ServeDir::new(
+                env::var("STATIC_DIR").unwrap_or("../frontend/build".into()),
+            )
+            .fallback(tower_http::services::ServeFile::new(
+                std::path::Path::new(&env::var("STATIC_DIR").unwrap_or("../frontend/build".into()))
+                    .join("200.html"),
+            )),
+        )
         .layer(axum::middleware::from_fn_with_state(
             app.clone(),
             crate::feature::auth::guard,

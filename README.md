@@ -200,3 +200,16 @@ Invoice metadata can be edited while active. Optional line edits are allowed onl
 Delivery create/edit body: `{ "sales_invoice_id": 1, "driver_name": "Driver", "date": "2026-11-13", "address": "Jakarta", "note": "", "details": [{ "sales_invoice_detail_id": 1, "quantity": 2, "notes": "" }] }`. Status body: `{ "status": "On Delivery" }`, `{ "status": "Delivered" }`, or `{ "status": "Cancelled", "cancellation_note": "Reason" }`. Approval takes `{}`. All writes use JSON content type. The legacy sales cancellation route uses the same Finance approval workflow.
 
 Run `cargo test -- --include-ignored` from `backend` to include MySQL workflow tests. These create uniquely named temporary databases and require create/drop permission; override `TEST_MYSQL_ADMIN_URL` if needed. Tests cover migrations, invoice/stock/payment flows, JWT validation, refresh replay/concurrency, revocation, RBAC, idempotent replay/concurrency, Finance void approvals, delivery quantity races and cancellation release. Run `npm run check` and `npm run build` from `frontend` for UI validation.
+
+
+## Connected record detail pages
+
+Purchase orders, purchase invoices and sales invoices open at `/documents/{id}/`. Payments use `/payments/{id}/`, delivery orders `/delivery-orders/{id}/`, and products `/products/{id}/`. Existing list and dashboard links open full detail pages. Invoice edits/void requests and delivery draft edits/status changes are available on the detail pages.
+
+Sales invoice pages list every allocated payment and related delivery order. Payment pages link back to each allocated invoice and show the amount applied to that invoice. Purchase invoice pages link to their optional purchase order; purchase order pages list the corresponding purchase invoices. Product names link to their product page throughout lists, forecasts, document lines and delivery details. Newly entered products in an unposted preview do not yet have a persisted detail page.
+
+Product pages show inventory plus the latest ten purchase orders, purchase invoices, sales invoices and delivery orders containing the product, ordered by document date and ID descending. Each related entry links to its own detail page. Related sections respect the current user's permissions; a product-only role cannot read invoice or delivery data through the product endpoint.
+
+Detail APIs are `GET /api/documents/{id}`, `/api/payments/{id}`, `/api/delivery-orders/{id}`, and `/api/products/{id}`. Missing records return 404. Payment lists include structured `invoice_links` as well as the existing display text. The existing schema already provides the foreign keys; no data migration is required for these navigation changes.
+
+The static frontend emits `200.html` for dynamic routes. The Rust server serves this fallback for frontend routes, allowing bookmarked detail URLs and reloads. If the frontend is hosted separately, configure the host to rewrite unmatched frontend paths to `200.html` and proxy `/api` to Rust.

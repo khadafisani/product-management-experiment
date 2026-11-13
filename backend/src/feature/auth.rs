@@ -357,14 +357,14 @@ pub(crate) async fn guard(State(a): State<App>, mut req: Request, next: Next) ->
     let permission = match route {
         "/api/auth/me" | "/api/auth/password" | "/api/auth/logout-all" => "profile.read",
         "/api/roles" | "/api/roles/{id}" | "/api/users" | "/api/users/{id}/role" => "roles.manage",
-        "/api/payments" => {
+        "/api/payments" | "/api/payments/{id}" => {
             if write {
                 "payments.write"
             } else {
                 "payments.read"
             }
         }
-        "/api/products" => {
+        "/api/products" | "/api/products/{id}" => {
             if write {
                 "products.write"
             } else {

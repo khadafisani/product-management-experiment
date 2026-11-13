@@ -4,3 +4,5 @@ export const user = writable<User | null>(null);
 
 export const workspaceConnection = writable(true);
 export const workspaceLowStock = writable(0);
+
+export const detailNavigation = writable('');

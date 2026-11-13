@@ -59,9 +59,9 @@ fn order_json(r: &sqlx::mysql::MySqlRow) -> Value {
 }
 pub(crate) async fn detail(State(a): State<App>, Path(id): Path<i64>) -> Result<Json<Value>> {
     let r=sqlx::query("SELECT id,sales_invoice_id,driver_name,CAST(date AS CHAR) date,address,note,cancellation_note,status,created_by,approved_by FROM delivery_orders WHERE id=?").bind(id).fetch_optional(&a.db).await?.ok_or_else(||bad("Delivery order not found"))?;
-    let lines=sqlx::query("SELECT id,sales_invoice_detail_id,product_name,quantity,notes FROM delivery_order_details WHERE delivery_order_id=? ORDER BY sales_invoice_detail_id").bind(id).fetch_all(&a.db).await?;
+    let lines=sqlx::query("SELECT dd.id,dd.sales_invoice_detail_id,l.product_id,dd.product_name,dd.quantity,dd.notes FROM delivery_order_details dd JOIN document_lines l ON l.id=dd.sales_invoice_detail_id WHERE dd.delivery_order_id=? ORDER BY dd.sales_invoice_detail_id").bind(id).fetch_all(&a.db).await?;
     Ok(Json(
-        json!({"order":order_json(&r),"details":lines.iter().map(|l|json!({"id":l.get::<i64,_>("id"),"sales_invoice_detail_id":l.get::<i64,_>("sales_invoice_detail_id"),"product_name":l.get::<String,_>("product_name"),"quantity":l.get::<i64,_>("quantity"),"notes":l.get::<String,_>("notes")})).collect::<Vec<_>>()}),
+        json!({"order":order_json(&r),"details":lines.iter().map(|l|json!({"id":l.get::<i64,_>("id"),"product_id":l.get::<i64,_>("product_id"),"sales_invoice_detail_id":l.get::<i64,_>("sales_invoice_detail_id"),"product_name":l.get::<String,_>("product_name"),"quantity":l.get::<i64,_>("quantity"),"notes":l.get::<String,_>("notes")})).collect::<Vec<_>>()}),
     ))
 }
 async fn invoice(tx: &mut sqlx::Transaction<'_, sqlx::MySql>, id: i64) -> Result<()> {

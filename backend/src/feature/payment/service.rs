@@ -69,6 +69,9 @@ pub(crate) async fn pay(a: App, p: PaymentInput) -> Result<Value> {
     Ok(json!({"id":id}))
 }
 pub(crate) async fn payments(a: App) -> Result<Value> {
-    let rows=sqlx::query("SELECT p.id,p.reference,CAST(p.date AS CHAR) date,p.amount,p.kind, GROUP_CONCAT(d.number ORDER BY d.id SEPARATOR ', ') invoices FROM payments p JOIN payment_allocations pa ON pa.payment_id=p.id JOIN documents d ON d.id=pa.invoice_id GROUP BY p.id ORDER BY p.id DESC").fetch_all(&a.db).await?;
-    Ok(json!(rows.iter().map(|r|json!({"id":r.get::<i64,_>("id"),"reference":r.get::<String,_>("reference"),"date":r.get::<String,_>("date"),"amount":r.get::<i64,_>("amount"),"kind":r.get::<String,_>("kind"),"invoices":r.get::<String,_>("invoices")})).collect::<Vec<_>>()))
+    let rows=sqlx::query("SELECT p.id,p.reference,CAST(p.date AS CHAR) date,p.amount,p.kind, GROUP_CONCAT(d.number ORDER BY d.id SEPARATOR ', ') invoices FROM payments p JOIN payment_allocations pa ON pa.payment_id=p.id JOIN documents d ON d.id=pa.invoice_id GROUP BY p.id ORDER BY p.date DESC,p.id DESC").fetch_all(&a.db).await?;
+    let links=sqlx::query("SELECT pa.payment_id,d.id,d.number,d.kind FROM payment_allocations pa JOIN documents d ON d.id=pa.invoice_id ORDER BY d.id").fetch_all(&a.db).await?;
+    let mut grouped=std::collections::HashMap::<i64,Vec<Value>>::new();
+    for r in links {grouped.entry(r.get("payment_id")).or_default().push(json!({"id":r.get::<i64,_>("id"),"number":r.get::<String,_>("number"),"kind":r.get::<String,_>("kind")}));}
+    Ok(json!(rows.iter().map(|r|json!({"id":r.get::<i64,_>("id"),"reference":r.get::<String,_>("reference"),"date":r.get::<String,_>("date"),"amount":r.get::<i64,_>("amount"),"kind":r.get::<String,_>("kind"),"invoices":r.get::<String,_>("invoices"),"invoice_links":grouped.get(&r.get::<i64,_>("id")).cloned().unwrap_or_default()})).collect::<Vec<_>>()))
 }

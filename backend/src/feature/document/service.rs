@@ -25,7 +25,7 @@ pub(crate) async fn detail(a: App, id: i64) -> Result<Value> {
         .sum();
     let allocations = sqlx
         ::query(
-            "SELECT p.reference,pa.amount FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.invoice_id=?"
+            "SELECT p.id,p.reference,CAST(p.date AS CHAR) date,pa.amount FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id WHERE pa.invoice_id=? ORDER BY p.date DESC,p.id DESC"
         )
         .bind(id)
         .fetch_all(&a.db).await?;
@@ -42,7 +42,7 @@ pub(crate) async fn detail(a: App, id: i64) -> Result<Value> {
                 json!({"reason":r.get::<String,_>("reason"),"refund_due":r.get::<i64,_>("refund_due"),"cancelled_at":r.get::<String,_>("cancelled_at")})
         );
     Ok(
-        json!({"cancellation":cancellation,"document":doc,"total_product":lines.len(),"total_quantity":total_quantity,"lines":lines,"payments":allocations.iter().map(|r|json!({"reference":r.get::<String,_>("reference"),"amount":r.get::<i64,_>("amount")})).collect::<Vec<_>>()})
+        json!({"cancellation":cancellation,"document":doc,"total_product":lines.len(),"total_quantity":total_quantity,"lines":lines,"payments":allocations.iter().map(|r|json!({"id":r.get::<i64,_>("id"),"reference":r.get::<String,_>("reference"),"date":r.get::<String,_>("date"),"amount":r.get::<i64,_>("amount")})).collect::<Vec<_>>()})
     )
 }
 pub(crate) async fn preview_document(a: App, d: DocumentInput) -> Result<Value> {

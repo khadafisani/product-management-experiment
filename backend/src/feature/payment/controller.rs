@@ -5,6 +5,7 @@ use serde_json::Value;
 pub(crate) async fn pay(State(a): State<App>, Json(p): Json<PaymentInput>) -> Result<Json<Value>> {
     Ok(Json(super::service::pay(a, p).await?))
 }
+#[cfg(test)]
 pub(crate) async fn payments(State(a): State<App>) -> Result<Json<Value>> {
     Ok(Json(super::service::payments(a).await?))
 }

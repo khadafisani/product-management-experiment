@@ -27,6 +27,7 @@ export type Payment = {
 	amount: number;
 	kind: string;
 	invoices: string;
+	invoice_links: { id: number; number: string; kind: string }[];
 };
 export type Forecast = {
 	id: number;

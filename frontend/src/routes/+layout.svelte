@@ -2,7 +2,13 @@
 	import './layout.css';
 	import { onMount } from 'svelte';
 	import { api } from '../lib/api';
-	import { user, workspaceConnection, workspaceLowStock, type User } from '../lib/auth';
+	import {
+		user,
+		workspaceConnection,
+		workspaceLowStock,
+		detailNavigation,
+		type User
+	} from '../lib/auth';
 	import Icon from '../lib/Icon.svelte';
 	import { page as route } from '$app/state';
 	let { children } = $props();
@@ -38,7 +44,13 @@
 					? 'Delivery orders'
 					: route.url.pathname.startsWith('/approvals')
 						? 'Approvals'
-						: 'Account'
+						: route.url.pathname.startsWith('/documents')
+							? $detailNavigation || 'Record details'
+							: route.url.pathname.startsWith('/products')
+								? 'Products'
+								: route.url.pathname.startsWith('/payments')
+									? 'Payments'
+									: 'Account'
 	);
 	let roleSection = $derived(route.url.searchParams.get('section') || 'roles');
 	let initials = $derived(

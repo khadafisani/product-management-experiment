@@ -1,11 +1,12 @@
 use super::entity::*;
 use crate::{ config::App, helper::Result };
-use axum::{ Json, extract::{ Path, State } };
+use axum::{ Json, extract::State };
 use serde_json::Value;
 pub(crate) async fn documents(State(a): State<App>) -> Result<Json<Vec<Document>>> {
     Ok(Json(super::service::documents(a).await?))
 }
-pub(crate) async fn detail(State(a): State<App>, Path(id): Path<i64>) -> Result<Json<Value>> {
+#[cfg(test)]
+pub(crate) async fn detail(State(a): State<App>, axum::extract::Path(id): axum::extract::Path<i64>) -> Result<Json<Value>> {
     Ok(Json(super::service::detail(a, id).await?))
 }
 pub(crate) async fn preview_document(

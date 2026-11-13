@@ -41,38 +41,11 @@
 		query = $state(''),
 		status = $state('All statuses'),
 		busy = $state(false);
-	let cancellationReason = $state('');
-	let editingInvoice = $state({
-		number: '',
-		date: '',
-		person: '',
-		editLines: false,
-		lines: [] as { product_id: number; item_name: string; quantity: number; price: number }[]
-	});
-	function editInvoice() {
-		editingInvoice = {
-			number: viewed.document.number,
-			date: viewed.document.date,
-			person: viewed.document.person,
-			editLines: false,
-			lines: viewed.lines.map((l: any) => ({
-				product_id: l.product_id,
-				item_name: l.item_name,
-				quantity: l.quantity,
-				price: l.price
-			}))
-		};
-		modal = 'edit-invoice';
-	}
 
 	let period = $state('6'),
 		horizon = $state(30),
 		lead = $state(7),
-		modal = $state(''),
-		viewed = $state<any>(null);
-	let cancellationRefund = $derived(
-		viewed?.payments?.reduce((sum: number, p: { amount: number }) => sum + p.amount, 0) ?? 0
-	);
+		modal = $state('');
 	let product = $state<Product>({
 		id: 0,
 		name: '',
@@ -246,6 +219,9 @@
 		searchIds = null;
 		error = '';
 	}
+	function purchaseOrderNumber(id: number | null) {
+		return documents.find((d) => d.id === id && d.kind === 'purchase_order')?.number;
+	}
 	function flash(message: string) {
 		notice = message;
 		setTimeout(() => (notice = ''), 5000);
@@ -290,6 +266,7 @@
 		error = '';
 	}
 	function replenish(p: { id: number; name: string }, quantity?: number) {
+		if (!$user?.permissions.includes('invoices.write')) return;
 		const existing = products.find((product) => product.id === p.id);
 		if (!existing || existing.status !== 'Active') return;
 		const prediction = forecasts.find((f) => f.id === p.id);
@@ -342,34 +319,11 @@
 	}
 	async function save(confirmed = false) {
 		if (busy) return;
-		let successMessage = 'Saved successfully';
+		const successMessage = 'Saved successfully';
 		busy = true;
 		error = '';
 		try {
-			if (modal === 'edit-invoice') {
-				await api(`/invoices/${viewed.document.id}`, {
-					number: editingInvoice.number,
-					date: editingInvoice.date,
-					person: editingInvoice.person,
-					...(editingInvoice.editLines
-						? {
-								lines: editingInvoice.lines.map((l) => ({
-									product_id: l.product_id,
-									quantity: l.quantity,
-									price: l.price
-								}))
-							}
-						: {})
-				});
-			} else if (modal === 'cancel') {
-				const result = await api<{ status: string }>(`/invoices/${viewed.document.id}/cancel`, {
-					reason: cancellationReason
-				});
-				successMessage =
-					result.status === 'Pending'
-						? 'Void request sent to Finance for approval.'
-						: 'Invoice voided.';
-			} else if (modal === 'product') await api('/products', product);
+			if (modal === 'product') await api('/products', product);
 			else if (modal === 'document') {
 				const payload =
 					confirmed && purchaseReview
@@ -399,17 +353,6 @@
 			await load();
 			flash(successMessage);
 			void syncSearch();
-		} catch (e) {
-			error = (e as Error).message;
-		} finally {
-			busy = false;
-		}
-	}
-	async function view(d: Document) {
-		busy = true;
-		try {
-			viewed = await api(`/documents/${d.id}`);
-			modal = 'detail';
 		} catch (e) {
 			error = (e as Error).message;
 		} finally {
@@ -658,6 +601,22 @@
 				>
 			</section>
 		</div>
+		<section class="receivables-banner" aria-labelledby="receivables-title">
+			<div class="receivables-label">
+				<span class="receivables-icon"><Icon name="payment" size={22} /></span>
+				<div>
+					<h2 id="receivables-title">Receivables</h2>
+					<p>
+						Outstanding customer balances across {sales.filter((d) => d.remaining_payment > 0)
+							.length} invoices
+					</p>
+				</div>
+			</div>
+			<strong class="receivables-amount">{money(receivable)}</strong>
+			<a class="button secondary receivables-link" href="/?view=Sales%20invoices"
+				>View sales invoices <Icon name="arrow" size={15} /></a
+			>
+		</section>
 		<div class="bottom-grid">
 			<section class="panel">
 				<div class="panel-heading">
@@ -675,7 +634,7 @@
 						><tbody
 							>{#each documents.slice(0, 5) as d}<tr
 									><td
-										><button class="record-link" onclick={() => view(d)}>{d.number}</button><small
+										><a class="record-link" href={`/documents/${d.id}/`}>{d.number}</a><small
 											>{d.person} · {d.date}</small
 										></td
 									><td>{d.kind.replaceAll('_', ' ')}</td><td class="amount"
@@ -704,28 +663,41 @@
 						>{lowStock.length + documents.filter((d) => d.status === 'Warning').length}</span
 					>
 				</div>
-				{#each lowStock.slice(0, 3) as p}<button
-						class="attention-row"
-						onclick={() => {
-							navigate('Products');
-							openProduct(p);
-						}}
-						><span class="product-letter">{p.name[0]}</span><span
-							><strong>{p.name}</strong><small
-								>{p.remaining_quantity} available units · Reorder at {p.reorder_level}</small
-							></span
-						><span><Icon name="arrow" size={16} /></span></button
-					>
-					<div class="attention-action">
-						<button
-							class="text-link"
-							aria-label={`Create purchase invoice for ${p.name}`}
-							onclick={() => replenish(p)}>+ Create purchase invoice</button
-						>
-					</div>{:else}<div class="all-clear">
-						<span><Icon name="check" /></span><strong>Looking good</strong>
-						<p>No stock alerts at the moment.</p>
-					</div>{/each}{#if documents.some((d) => d.status === 'Warning')}<button
+				<div class="stock-alert-list">
+					{#each lowStock.slice(0, 3) as p}<article class="stock-alert-card">
+							<a class="stock-alert-product" href={`/products/${p.id}/`}
+								><span class="stock-alert-image"
+									>{#if p.photo}<img src={p.photo} alt="" />{:else}<Icon
+											name="products"
+											size={20}
+										/>{/if}</span
+								><span class="stock-alert-name"
+									><strong>{p.name}</strong><small
+										>{p.remaining_quantity} available &middot; Reorder level {p.reorder_level}</small
+									></span
+								><Icon name="arrow" size={15} /></a
+							>
+							<div class="stock-alert-footer">
+								<span class="stock-alert-status" class:out-of-stock={p.remaining_quantity === 0}
+									>{p.remaining_quantity === 0 ? 'Out of stock' : 'Low stock'}</span
+								>
+								{#if $user?.permissions.includes('invoices.write')}<button
+										class="stock-alert-action"
+										aria-label={`Create purchase invoice for ${p.name}`}
+										onclick={() => replenish(p)}
+										><Icon name="invoice" size={15} />Create purchase invoice<Icon
+											name="arrow"
+											size={14}
+										/></button
+									>{/if}
+							</div>
+						</article>
+					{:else}<div class="all-clear">
+							<span><Icon name="check" /></span><strong>Looking good</strong>
+							<p>No stock alerts at the moment.</p>
+						</div>{/each}
+				</div>
+				{#if documents.some((d) => d.status === 'Warning')}<button
 						class="warning-link"
 						onclick={() => {
 							navigate('Purchase orders');
@@ -741,8 +713,7 @@
 			</section>
 		</div>
 		<div class="dashboard-note">
-			Receivables <strong>{money(receivable)}</strong><span>·</span> All amounts in Indonesian
-			Rupiah <span>·</span> Updated from your workspace
+			All amounts in Indonesian Rupiah <span>&middot;</span> Updated from your workspace
 		</div>
 	{:else if page === 'Stock forecast'}
 		<section class="forecast-banner">
@@ -811,9 +782,9 @@
 						></thead
 					><tbody
 						>{#each forecasts as f}<tr
-								><td><strong>{f.name}</strong></td><td>{f.quantity}</td><td
-									>{f.daily_sales.toFixed(2)}</td
-								><td
+								><td><a class="record-link" href={`/products/${f.id}/`}>{f.name}</a></td><td
+									>{f.quantity}</td
+								><td>{f.daily_sales.toFixed(2)}</td><td
 									>{f.days_remaining === null
 										? 'No recent sales'
 										: f.days_remaining.toFixed(1) + ' days'}</td
@@ -886,7 +857,9 @@
 									>REORDER LEVEL</th
 								><th>STATUS</th><th></th></tr
 							>{:else if page === 'Payments'}<tr
-								><th>REFERENCE</th><th>DATE</th><th>TYPE</th><th>INVOICES</th><th>AMOUNT</th></tr
+								><th>REFERENCE</th><th>DATE</th><th>TYPE</th><th>INVOICES</th><th>AMOUNT</th><th
+									aria-label="Actions"
+								></th></tr
 							>{:else}<tr
 								><th>{page === 'Purchase orders' ? 'ORDER' : 'INVOICE'} NUMBER</th><th
 									>{page === 'Sales invoices' ? 'CUSTOMER' : 'PERSON IN CHARGE'}</th
@@ -902,7 +875,9 @@
 													>{p.name.slice(0, 2).toUpperCase()}</span
 												>{/if}
 											<div>
-												<strong>{p.name}</strong><small>{p.description || 'No description'}</small>
+												<a class="record-link" href={`/products/${p.id}/`}>{p.name}</a><small
+													>{p.description || 'No description'}</small
+												>
 											</div>
 										</div></td
 									><td
@@ -939,25 +914,44 @@
 									></tr
 								>{/each}
 						{:else if page === 'Payments'}{#each filteredPayments as p}<tr
-									><td><strong>{p.reference}</strong></td><td>{p.date}</td><td
-										>{p.kind === 'sales_invoice' ? 'Customer receipt' : 'Supplier payment'}</td
-									><td>{p.invoices}</td><td class="amount">{money(p.amount)}</td></tr
+									><td><a class="record-link" href={`/payments/${p.id}/`}>{p.reference}</a></td><td
+										>{p.date}</td
+									><td>{p.kind === 'sales_invoice' ? 'Customer receipt' : 'Supplier payment'}</td
+									><td
+										><div class="inline-records">
+											<a
+												class="invoice-count-link"
+												href={`/payments/${p.id}/`}
+												aria-label={`View ${p.invoice_links?.length || 0} invoices for ${p.reference}`}
+												>{p.invoice_links?.length || 0}
+												{p.invoice_links?.length === 1 ? 'invoice' : 'invoices'}</a
+											>
+										</div></td
+									><td class="amount">{money(p.amount)}</td><td
+										><a
+											class="text-link"
+											href={`/payments/${p.id}/`}
+											aria-label={`View payment ${p.reference}`}>View &#8599;</a
+										></td
+									></tr
 								>{:else}<tr
-									><td colspan="5" class="empty-cell"
+									><td colspan="6" class="empty-cell"
 										><span><Icon name="arrow" size={16} /></span><strong>No payments found</strong>
 										<p>Record a payment against one or more outstanding invoices.</p></td
 									></tr
 								>{/each}
 						{:else}{#each filteredDocs as d}<tr
 									><td
-										><button class="record-link" onclick={() => view(d)}>{d.number}</button
-										>{#if d.purchase_order_id}<small>Linked to PO #{d.purchase_order_id}</small
+										><a class="record-link" href={`/documents/${d.id}/`}>{d.number}</a
+										>{#if d.purchase_order_id && purchaseOrderNumber(d.purchase_order_id)}<a
+												class="purchase-order-reference list-order-reference"
+												href={`/documents/${d.purchase_order_id}/`}
+												><span>PO</span>{purchaseOrderNumber(d.purchase_order_id)}</a
 											>{/if}</td
 									><td>{d.person}</td><td>{d.date}</td><td class="amount">{money(d.grand_total)}</td
 									>{#if page !== 'Purchase orders'}<td>{money(d.remaining_payment)}</td>{/if}<td
 										><span class="badge {badge(d.status)}">{d.status}</span></td
-									><td><button class="text-link" onclick={() => view(d)}>View &#8599;</button></td
-									></tr
+									><td><a class="text-link" href={`/documents/${d.id}/`}>View &#8599;</a></td></tr
 								>{:else}<tr
 									><td colspan="7" class="empty-cell"
 										><span><Icon name="arrow" size={16} /></span><strong
@@ -1004,7 +998,7 @@
 					error = '';
 				}
 			}}
-			class:wide={modal === 'document' || modal === 'detail'}
+			class:wide={modal === 'document'}
 			aria-modal="true"
 			aria-label={modal === 'product'
 				? 'Product'
@@ -1027,9 +1021,7 @@
 								? 'Create ' + draft.kind.replaceAll('_', ' ')
 								: modal === 'payment'
 									? 'Record payment'
-									: modal === 'cancel'
-										? 'Void invoice'
-										: viewed?.document.number}
+									: 'Product'}
 					</h2>
 				</div>
 				<button
@@ -1043,453 +1035,330 @@
 				>
 			</div>
 			{#if error}<div class="alert" role="alert">{error}</div>{/if}
-			{#if modal === 'detail' && viewed}<div class="detail-meta">
-					<div><small>PERSON / CUSTOMER</small><strong>{viewed.document.person}</strong></div>
-					<div><small>DATE</small><strong>{viewed.document.date}</strong></div>
-					<div>
-						<small>STATUS</small><span class="badge {badge(viewed.document.status)}"
-							>{viewed.document.status}</span
+			<form
+				onsubmit={(e) => {
+					e.preventDefault();
+					void save(!!purchaseReview);
+				}}
+			>
+				{#if modal === 'document' && purchaseReview}
+					<section class="purchase-preview" aria-label="New product creation preview">
+						<div class="preview-heading">
+							<Icon name="products" size={24} />
+							<div>
+								<h3>Review new products</h3>
+								<p>These products will be created when you confirm and post this document.</p>
+							</div>
+						</div>
+						<div class="detail-meta">
+							<div><small>DOCUMENT</small><strong>{purchaseReview.draft.number}</strong></div>
+							<div><small>DATE</small><strong>{purchaseReview.draft.date}</strong></div>
+							<div>
+								<small>TOTAL</small><strong
+									>{money(
+										purchaseReview.draft.lines.reduce(
+											(sum, line) => sum + line.quantity * line.price,
+											0
+										)
+									)}</strong
+								>
+							</div>
+						</div>
+						<div class="table-wrap">
+							<table>
+								<thead
+									><tr
+										><th>NEW PRODUCT</th><th>UNIT PRICE</th><th>PHYSICAL STOCK AFTER POSTING</th><th
+											>REMAINING QTY</th
+										><th>STATUS</th></tr
+									></thead
+								><tbody
+									>{#each purchaseReview.new_products as p}<tr
+											><td><strong>{p.name}</strong></td><td>{money(p.price)}</td><td
+												>{p.quantity} units</td
+											><td>0 units</td><td><span class="badge good">{p.status}</span></td></tr
+										>{/each}</tbody
+								>
+							</table>
+						</div>
+						<p class="method-note">
+							Default reorder level: 10 units. {purchaseReview.draft.kind === 'purchase_order'
+								? 'Purchase orders create products with zero stock; goods are received with a purchase invoice.'
+								: 'This invoice receives physical stock immediately; remaining quantity stays zero until the invoice is fully Paid.'}
+							No products or documents have been saved yet.
+						</p>
+						{#if purchaseReview.draft.purchase_order_id}<p class="validation-message">
+								Items outside the original PO will appear as unplanned deliveries and flag the PO as
+								Warning.
+							</p>{/if}
+					</section>
+				{:else if modal === 'product'}{#if product.id > 0}<a
+							class="record-link"
+							href={`/products/${product.id}/`}>View product detail page &#8599;</a
+						>{/if}
+					<div class="form-grid">
+						<label class="full"
+							>Product name<input
+								required
+								maxlength="200"
+								bind:value={product.name}
+								placeholder="e.g. Wireless keyboard"
+							/></label
+						><label
+							>Physical stock<input
+								required
+								type="number"
+								min="0"
+								step="1"
+								oninput={(event) => {
+									if (!product.id) product.remaining_quantity = Number(event.currentTarget.value);
+								}}
+								bind:value={product.quantity}
+							/></label
+						><label
+							>Remaining quantity<input
+								required
+								type="number"
+								min="0"
+								max={product.quantity}
+								step="1"
+								bind:value={product.remaining_quantity}
+							/><small class="muted">Available to sell; cannot exceed physical stock.</small></label
+						><label
+							>Unit price (IDR)<input
+								required
+								type="number"
+								min="0"
+								step="1"
+								bind:value={product.price}
+							/></label
+						><label
+							>Reorder level<input
+								required
+								type="number"
+								min="0"
+								step="1"
+								bind:value={product.reorder_level}
+							/></label
+						><label
+							>Status<select bind:value={product.status}
+								><option>Active</option><option>Inactive</option></select
+							></label
+						><label class="full"
+							>Photo URL <span class="muted">(optional)</span><input
+								type="url"
+								bind:value={product.photo}
+								placeholder="https://..."
+							/></label
+						><label class="full"
+							>Description<textarea
+								rows="3"
+								bind:value={product.description}
+								placeholder="A few details about this product"></textarea></label
 						>
 					</div>
-				</div>
-				<div class="table-wrap">
-					<table>
-						<thead
-							><tr
-								><th>ITEM</th><th>QUANTITY</th><th>PRICE</th
-								>{#if viewed.document.kind === 'purchase_order'}<th>REMAINING QTY</th><th>STATUS</th
-									>{/if}{#if viewed.document.kind === 'sales_invoice'}<th>ON DELIVERY</th><th
-										>DELIVERED</th
-									>{/if}<th>SUBTOTAL</th></tr
-							></thead
-						><tbody
-							>{#each viewed.lines as l}<tr
-									><td>{l.item_name}</td><td>{l.quantity}</td><td>{money(l.price)}</td
-									>{#if viewed.document.kind === 'purchase_order'}<td>{l.realized_quantity}</td><td
-											><span class="badge {badge(l.status)}">{l.status}</span></td
-										>{/if}{#if viewed.document.kind === 'sales_invoice'}<td
-											>{l.on_delivery_quantity}</td
-										><td>{l.delivered_quantity}</td>{/if}<td>{money(l.subtotal)}</td></tr
-								>{/each}</tbody
-						>
-					</table>
-				</div>
-				<div class="detail-totals">
-					<p>{viewed.total_product} products · {viewed.total_quantity} units</p>
-					<p>Grand total <strong>{money(viewed.document.grand_total)}</strong></p>
-					{#if viewed.document.kind !== 'purchase_order'}<p>
-							Outstanding <strong>{money(viewed.document.remaining_payment)}</strong>
+					{#if product.id}<p class="method-note">
+							Changing stock records a manual adjustment in the stock ledger.
 						</p>{/if}
-				</div>
-				{#if viewed.payments.length}<h3>Payment history</h3>
-					{#each viewed.payments as p}<p class="allocation">
-							<span>{p.reference}</span><strong>{money(p.amount)}</strong>
-						</p>{/each}{/if}
-				<p class="method-note">
-					Posted documents preserve transaction history. PO remaining quantity decreases with each
-					linked purchase invoice; negative values indicate over-delivery.
-				</p>
-				{#if viewed.cancellation}<div class="cancellation-summary">
-						<strong>Cancelled</strong>
-						<p>{viewed.cancellation.reason}</p>
-						<p>Refund due: <strong>{money(viewed.cancellation.refund_due)}</strong></p>
-					</div>{/if}
-				{#if viewed.document.kind !== 'purchase_order' && viewed.document.status !== 'Cancelled' && $user?.permissions.includes('invoices.write')}<button
-						class="button secondary"
-						onclick={editInvoice}>Edit invoice</button
-					>{/if}
-				{#if viewed.document.kind !== 'purchase_order' && viewed.document.status !== 'Cancelled' && $user?.permissions.includes('invoices.request_void')}<div
-						class="modal-actions"
-					>
-						<button
-							class="button danger-button"
-							onclick={() => {
-								purchaseReview = null;
-								cancellationReason = '';
-								modal = 'cancel';
-							}}>Cancel sales invoice</button
-						>
-					</div>{/if}
-			{:else}<form
-					onsubmit={(e) => {
-						e.preventDefault();
-						void save(!!purchaseReview);
-					}}
-				>
-					{#if modal === 'edit-invoice'}<section>
-							<h3>Edit {viewed.document.number}</h3>
-							<label
-								>Invoice number<input
-									bind:value={editingInvoice.number}
-									required
-									maxlength="100"
-								/></label
-							><label>Date<input type="date" bind:value={editingInvoice.date} required /></label
-							><label
-								>Customer / supplier<input
-									bind:value={editingInvoice.person}
-									required
-									maxlength="200"
-								/></label
-							>
-							{#if viewed.payments.length === 0}<label
-									><input type="checkbox" bind:checked={editingInvoice.editLines} /> Edit quantities and
-									prices</label
-								>
-								<p>Line edits are allowed before any payments or delivery orders exist.</p>{/if}
-							{#if editingInvoice.editLines}{#each editingInvoice.lines as l}<fieldset>
-										<legend>{l.item_name}</legend><label
-											>Quantity<input
-												type="number"
-												min="1"
-												step="1"
-												bind:value={l.quantity}
-												required
-											/></label
-										><label
-											>Price<input
-												type="number"
-												min="1"
-												step="1"
-												bind:value={l.price}
-												required
-											/></label
-										>
-									</fieldset>{/each}{/if}
-						</section>
-					{:else if modal === 'cancel'}<section class="cancellation-preview">
-							<h3>Cancel {viewed.document.number}?</h3>
-							<p>
-								This restores {viewed.total_quantity} units to physical and remaining stock, closes the
-								outstanding balance, and excludes these sales from forecasts. The history stays available.
-							</p>
-							<label
-								>Cancellation reason<textarea
-									required
-									maxlength="500"
-									rows="3"
-									bind:value={cancellationReason}
-									placeholder="Why is this invoice being cancelled?"></textarea></label
-							>
-							{#if cancellationRefund > 0}<div class="validation-message">
-									Payments of {money(cancellationRefund)} will be retained in the history and recorded
-									as a refund due. This does not send a refund.
-								</div>{/if}
-						</section>
-					{:else if modal === 'document' && purchaseReview}
-						<section class="purchase-preview" aria-label="New product creation preview">
-							<div class="preview-heading">
-								<Icon name="products" size={24} />
-								<div>
-									<h3>Review new products</h3>
-									<p>These products will be created when you confirm and post this document.</p>
-								</div>
-							</div>
-							<div class="detail-meta">
-								<div><small>DOCUMENT</small><strong>{purchaseReview.draft.number}</strong></div>
-								<div><small>DATE</small><strong>{purchaseReview.draft.date}</strong></div>
-								<div>
-									<small>TOTAL</small><strong
-										>{money(
-											purchaseReview.draft.lines.reduce(
-												(sum, line) => sum + line.quantity * line.price,
-												0
-											)
-										)}</strong
-									>
-								</div>
-							</div>
-							<div class="table-wrap">
-								<table>
-									<thead
-										><tr
-											><th>NEW PRODUCT</th><th>UNIT PRICE</th><th>PHYSICAL STOCK AFTER POSTING</th
-											><th>REMAINING QTY</th><th>STATUS</th></tr
-										></thead
-									><tbody
-										>{#each purchaseReview.new_products as p}<tr
-												><td><strong>{p.name}</strong></td><td>{money(p.price)}</td><td
-													>{p.quantity} units</td
-												><td>0 units</td><td><span class="badge good">{p.status}</span></td></tr
-											>{/each}</tbody
-									>
-								</table>
-							</div>
-							<p class="method-note">
-								Default reorder level: 10 units. {purchaseReview.draft.kind === 'purchase_order'
-									? 'Purchase orders create products with zero stock; goods are received with a purchase invoice.'
-									: 'This invoice receives physical stock immediately; remaining quantity stays zero until the invoice is fully Paid.'}
-								No products or documents have been saved yet.
-							</p>
-							{#if purchaseReview.draft.purchase_order_id}<p class="validation-message">
-									Items outside the original PO will appear as unplanned deliveries and flag the PO
-									as Warning.
-								</p>{/if}
-						</section>
-					{:else if modal === 'product'}<div class="form-grid">
-							<label class="full"
-								>Product name<input
-									required
-									maxlength="200"
-									bind:value={product.name}
-									placeholder="e.g. Wireless keyboard"
-								/></label
-							><label
-								>Physical stock<input
-									required
-									type="number"
-									min="0"
-									step="1"
-									oninput={(event) => {
-										if (!product.id) product.remaining_quantity = Number(event.currentTarget.value);
-									}}
-									bind:value={product.quantity}
-								/></label
-							><label
-								>Remaining quantity<input
-									required
-									type="number"
-									min="0"
-									max={product.quantity}
-									step="1"
-									bind:value={product.remaining_quantity}
-								/><small class="muted">Available to sell; cannot exceed physical stock.</small
-								></label
-							><label
-								>Unit price (IDR)<input
-									required
-									type="number"
-									min="0"
-									step="1"
-									bind:value={product.price}
-								/></label
-							><label
-								>Reorder level<input
-									required
-									type="number"
-									min="0"
-									step="1"
-									bind:value={product.reorder_level}
-								/></label
-							><label
-								>Status<select bind:value={product.status}
-									><option>Active</option><option>Inactive</option></select
-								></label
-							><label class="full"
-								>Photo URL <span class="muted">(optional)</span><input
-									type="url"
-									bind:value={product.photo}
-									placeholder="https://..."
-								/></label
-							><label class="full"
-								>Description<textarea
-									rows="3"
-									bind:value={product.description}
-									placeholder="A few details about this product"></textarea></label
-							>
-						</div>
-						{#if product.id}<p class="method-note">
-								Changing stock records a manual adjustment in the stock ledger.
-							</p>{/if}
-					{:else if modal === 'document'}<div class="form-grid">
-							<label
-								>Document number<input
-									required
-									maxlength="100"
-									bind:value={draft.number}
-									placeholder={draft.kind === 'purchase_order'
-										? 'PO-2026-001'
-										: draft.kind === 'purchase_invoice'
-											? 'PINV-2026-001'
-											: 'SINV-2026-001'}
-								/></label
-							><label>Date<input type="date" required bind:value={draft.date} /></label><label
-								class:full={draft.kind !== 'purchase_invoice'}
-								>{draft.kind === 'sales_invoice'
-									? 'Customer name'
+				{:else if modal === 'document'}<div class="form-grid">
+						<label
+							>Document number<input
+								required
+								maxlength="100"
+								bind:value={draft.number}
+								placeholder={draft.kind === 'purchase_order'
+									? 'PO-2026-001'
 									: draft.kind === 'purchase_invoice'
-										? 'Created by'
-										: 'Person in charge'}<input
-									required
-									maxlength="200"
-									bind:value={draft.person}
-								/></label
-							>{#if draft.kind === 'purchase_invoice'}<label
-									>Purchase order <span class="muted">(optional)</span><select
-										bind:value={draft.purchase_order_id}
-										onchange={linkPO}
-										><option value={null}>Standalone invoice</option
-										>{#each documents.filter((d) => d.kind === 'purchase_order') as d}<option
-												value={d.id}>{d.number}</option
-											>{/each}</select
-									></label
-								>{/if}
-						</div>
-						<div class="line-title">
-							<h3>Line items</h3>
-							<button
-								type="button"
-								class="text-link"
-								onclick={() => draft.lines.push({ product_id: 0, quantity: 1, price: 0 })}
-								>+ Add line</button
-							>
-						</div>
-						{#each draft.lines as l, i}<div class="line-inputs">
-								<div class="product-picker">
-									<label
-										>Product<select
-											required
-											bind:value={l.product_id}
-											onchange={() => pickProduct(l)}
-										>
-											<option value={0} disabled>Select a product</option>
-											{#if draft.kind !== 'sales_invoice'}<option value={-1}
-													>+ Enter a new product</option
-												>{/if}
-											{#each products.filter((p) => p.status === 'Active') as p}<option value={p.id}
-													>{p.name} ({p.remaining_quantity} available)</option
-												>{/each}
-										</select></label
-									>
-									{#if l.product_id === -1}<label
-											>New product name<input
-												required
-												maxlength="200"
-												bind:value={l.item_name}
-												placeholder="e.g. Ergonomic Office Chair"
-											/><small class="muted"
-												>New products require confirmation. Matching names reuse existing products.</small
-											></label
-										>{/if}
-								</div>
-								<label
-									>Quantity<input
-										required
-										type="number"
-										min="1"
-										step="1"
-										max={draft.kind === 'sales_invoice'
-											? (products.find((p) => p.id === l.product_id)?.remaining_quantity ?? 0)
-											: undefined}
-										bind:value={l.quantity}
-									/></label
-								><label
-									>Price (IDR)<input
-										required
-										type="number"
-										min="0"
-										step="1"
-										bind:value={l.price}
-									/></label
-								>
-								<div class="line-subtotal">{money(l.quantity * l.price)}</div>
-								<button
-									type="button"
-									class="icon-button"
-									aria-label={`Remove line ${i + 1}`}
-									disabled={draft.lines.length === 1}
-									onclick={() => draft.lines.splice(i, 1)}>×</button
-								>
-							</div>{/each}
-						<div class="document-total">Grand total <strong>{money(draftTotal)}</strong></div>
-						<p class="method-note">
-							{draft.kind === 'purchase_order'
-								? 'Orders reserve the purchasing plan. Stock changes when a purchase invoice is posted.'
+										? 'PINV-2026-001'
+										: 'SINV-2026-001'}
+							/></label
+						><label>Date<input type="date" required bind:value={draft.date} /></label><label
+							class:full={draft.kind !== 'purchase_invoice'}
+							>{draft.kind === 'sales_invoice'
+								? 'Customer name'
 								: draft.kind === 'purchase_invoice'
-									? 'Posting receives physical stock. Units become available for sale when the purchase invoice is fully Paid. Linked PO quantities are deducted immediately.'
-									: 'Posting deducts stock immediately. Record customer receipts in Payments.'}
-						</p>
-					{:else if modal === 'payment'}<div class="form-grid">
-							<label
-								>Reference<input
-									required
-									maxlength="100"
-									bind:value={payment.reference}
-									placeholder="PAY-2026-001"
-								/></label
-							><label>Date<input type="date" required bind:value={payment.date} /></label><label
-								>Payment type<select
-									bind:value={payment.kind}
-									onchange={() => (payment.invoice_ids = [])}
-									><option value="purchase_invoice">Supplier payment</option><option
-										value="sales_invoice">Customer receipt</option
-									></select
+									? 'Created by'
+									: 'Person in charge'}<input
+								required
+								maxlength="200"
+								bind:value={draft.person}
+							/></label
+						>{#if draft.kind === 'purchase_invoice'}<label
+								>Purchase order <span class="muted">(optional)</span><select
+									bind:value={draft.purchase_order_id}
+									onchange={linkPO}
+									><option value={null}>Standalone invoice</option
+									>{#each documents.filter((d) => d.kind === 'purchase_order') as d}<option
+											value={d.id}>{d.number}</option
+										>{/each}</select
 								></label
-							><label
-								>Amount (IDR)<input
+							>{/if}
+					</div>
+					<div class="line-title">
+						<h3>Line items</h3>
+						<button
+							type="button"
+							class="text-link"
+							onclick={() => draft.lines.push({ product_id: 0, quantity: 1, price: 0 })}
+							>+ Add line</button
+						>
+					</div>
+					{#each draft.lines as l, i}<div class="line-inputs">
+							<div class="product-picker">
+								<label
+									>Product<select
+										required
+										bind:value={l.product_id}
+										onchange={() => pickProduct(l)}
+									>
+										<option value={0} disabled>Select a product</option>
+										{#if draft.kind !== 'sales_invoice'}<option value={-1}
+												>+ Enter a new product</option
+											>{/if}
+										{#each products.filter((p) => p.status === 'Active') as p}<option value={p.id}
+												>{p.name} ({p.remaining_quantity} available)</option
+											>{/each}
+									</select></label
+								>
+								{#if l.product_id > 0}<a class="record-link" href={`/products/${l.product_id}/`}
+										>View product details &#8599;</a
+									>{/if}
+								{#if l.product_id === -1}<label
+										>New product name<input
+											required
+											maxlength="200"
+											bind:value={l.item_name}
+											placeholder="e.g. Ergonomic Office Chair"
+										/><small class="muted"
+											>New products require confirmation. Matching names reuse existing products.</small
+										></label
+									>{/if}
+							</div>
+							<label
+								>Quantity<input
 									required
 									type="number"
 									min="1"
 									step="1"
-									bind:value={payment.amount}
+									max={draft.kind === 'sales_invoice'
+										? (products.find((p) => p.id === l.product_id)?.remaining_quantity ?? 0)
+										: undefined}
+									bind:value={l.quantity}
+								/></label
+							><label
+								>Price (IDR)<input
+									required
+									type="number"
+									min="0"
+									step="1"
+									bind:value={l.price}
 								/></label
 							>
-						</div>
-						<h3>Select invoices in allocation order</h3>
-						<p class="method-note">
-							The first selected invoice is paid first. Each following invoice receives the
-							remaining amount.
-						</p>
-						<div class="invoice-picker">
-							{#each documents.filter((d) => d.kind === payment.kind && d.remaining_payment > 0) as d}<label
-									><input
-										type="checkbox"
-										checked={payment.invoice_ids.includes(d.id)}
-										onchange={() => toggleInvoice(d.id)}
-									/><span><strong>{d.number}</strong><small>{d.person}</small></span><strong
-										>{money(d.remaining_payment)}</strong
-									>{#if payment.invoice_ids.includes(d.id)}<span class="selection-order"
-											>{payment.invoice_ids.indexOf(d.id) + 1}</span
-										>{/if}</label
-								>{:else}<p class="method-note">
-									No outstanding invoices. Create an invoice first.
-								</p>{/each}
-						</div>
-						{#if allocations.length}<h3>Allocation preview</h3>
-							{#each allocations as a}<div class="allocation">
-									<span
-										>{a.number}<small
-											>{a.remaining === 0 ? 'Paid' : 'Partial Paid'} · remaining {money(
-												a.remaining
-											)}</small
-										></span
-									><strong>{money(a.amount)}</strong>
-								</div>{/each}{/if}{#if paymentError}<p class="validation-message">
-								{paymentError}
-							</p>{/if}
-					{/if}
-					<div class="modal-actions">
-						<button
-							type="button"
-							class="button secondary"
-							disabled={busy}
-							onclick={() => {
-								if (purchaseReview) {
-									purchaseReview = null;
-								} else {
-									modal = '';
-								}
-								error = '';
-							}}>{purchaseReview ? 'Back to edit' : 'Cancel'}</button
-						><button
-							class="button primary"
-							disabled={busy || (modal === 'payment' && !!paymentError)}
-							>{busy
-								? 'Saving…'
-								: modal === 'document'
-									? purchaseReview
-										? 'Confirm products & post'
-										: 'Review & post document'
-									: modal === 'payment'
-										? 'Record payment'
-										: modal === 'cancel'
-											? 'Confirm cancellation'
-											: modal === 'edit-invoice'
-												? 'Save invoice'
-												: 'Save product'}</button
+							<div class="line-subtotal">{money(l.quantity * l.price)}</div>
+							<button
+								type="button"
+								class="icon-button"
+								aria-label={`Remove line ${i + 1}`}
+								disabled={draft.lines.length === 1}
+								onclick={() => draft.lines.splice(i, 1)}>×</button
+							>
+						</div>{/each}
+					<div class="document-total">Grand total <strong>{money(draftTotal)}</strong></div>
+					<p class="method-note">
+						{draft.kind === 'purchase_order'
+							? 'Orders reserve the purchasing plan. Stock changes when a purchase invoice is posted.'
+							: draft.kind === 'purchase_invoice'
+								? 'Posting receives physical stock. Units become available for sale when the purchase invoice is fully Paid. Linked PO quantities are deducted immediately.'
+								: 'Posting deducts stock immediately. Record customer receipts in Payments.'}
+					</p>
+				{:else if modal === 'payment'}<div class="form-grid">
+						<label
+							>Reference<input
+								required
+								maxlength="100"
+								bind:value={payment.reference}
+								placeholder="PAY-2026-001"
+							/></label
+						><label>Date<input type="date" required bind:value={payment.date} /></label><label
+							>Payment type<select
+								bind:value={payment.kind}
+								onchange={() => (payment.invoice_ids = [])}
+								><option value="purchase_invoice">Supplier payment</option><option
+									value="sales_invoice">Customer receipt</option
+								></select
+							></label
+						><label
+							>Amount (IDR)<input
+								required
+								type="number"
+								min="1"
+								step="1"
+								bind:value={payment.amount}
+							/></label
 						>
 					</div>
-				</form>{/if}
+					<h3>Select invoices in allocation order</h3>
+					<p class="method-note">
+						The first selected invoice is paid first. Each following invoice receives the remaining
+						amount.
+					</p>
+					<div class="invoice-picker">
+						{#each documents.filter((d) => d.kind === payment.kind && d.remaining_payment > 0) as d}<label
+								><input
+									type="checkbox"
+									checked={payment.invoice_ids.includes(d.id)}
+									onchange={() => toggleInvoice(d.id)}
+								/><span
+									><a class="record-link" href={`/documents/${d.id}/`}>{d.number}</a><small
+										>{d.person}</small
+									></span
+								><strong>{money(d.remaining_payment)}</strong
+								>{#if payment.invoice_ids.includes(d.id)}<span class="selection-order"
+										>{payment.invoice_ids.indexOf(d.id) + 1}</span
+									>{/if}</label
+							>{:else}<p class="method-note">
+								No outstanding invoices. Create an invoice first.
+							</p>{/each}
+					</div>
+					{#if allocations.length}<h3>Allocation preview</h3>
+						{#each allocations as a}<div class="allocation">
+								<span
+									>{a.number}<small
+										>{a.remaining === 0 ? 'Paid' : 'Partial Paid'} · remaining {money(
+											a.remaining
+										)}</small
+									></span
+								><strong>{money(a.amount)}</strong>
+							</div>{/each}{/if}{#if paymentError}<p class="validation-message">
+							{paymentError}
+						</p>{/if}
+				{/if}
+				<div class="modal-actions">
+					<button
+						type="button"
+						class="button secondary"
+						disabled={busy}
+						onclick={() => {
+							if (purchaseReview) {
+								purchaseReview = null;
+							} else {
+								modal = '';
+							}
+							error = '';
+						}}>{purchaseReview ? 'Back to edit' : 'Cancel'}</button
+					><button class="button primary" disabled={busy || (modal === 'payment' && !!paymentError)}
+						>{busy
+							? 'Saving…'
+							: modal === 'document'
+								? purchaseReview
+									? 'Confirm products & post'
+									: 'Review & post document'
+								: modal === 'payment'
+									? 'Record payment'
+									: 'Save product'}</button
+					>
+				</div>
+			</form>
 		</dialog>
 	</div>
 {/if}

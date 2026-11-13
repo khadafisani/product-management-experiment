@@ -509,6 +509,21 @@ async fn auth_permissions_idempotency_and_delivery_workflow() {
     let (_, pd, _) = call(&app, &format!("/api/documents/{po}"), &staff, None, "").await;
     assert_eq!(pd["lines"][0]["realized_quantity"], 1);
     assert_eq!(pd["document"]["status"], "Partial");
+    let (_, receiving, _) = call(
+        &app,
+        &format!("/api/documents/{purchase}"),
+        &staff,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(receiving["purchase_order_lines"][0]["received_quantity"], 3);
+    assert_eq!(
+        receiving["purchase_order_lines"][0]["remaining_quantity"],
+        1
+    );
+    assert_eq!(receiving["purchase_order_lines"][0]["invoice_quantity"], 3);
+
     let (s, b, _) = call(
         &app,
         &format!("/api/invoices/{purchase}/cancel"),
@@ -538,6 +553,148 @@ async fn auth_permissions_idempotency_and_delivery_workflow() {
             .await
             .unwrap();
     assert_eq!(stock, (18, 18));
+    // Detail endpoints connect records in both directions, including split payments.
+    let(s,split_sale,_)=call(&app,"/api/sales-invoices",&staff,Some(json!({"kind":"sales_invoice","number":"SPLIT-RECEIPT","date":"2026-11-13","person":"Customer","lines":[{"product_id":product_id,"quantity":1,"price":100}]})),"split-sale").await;
+    assert_eq!(s, StatusCode::OK);
+    let split_sale = split_sale["id"].as_i64().unwrap();
+    let(s,split_payment,_)=call(&app,"/api/payments",&finance,Some(json!({"reference":"SPLIT-PAYMENT","date":"2026-11-13","amount":150,"kind":"sales_invoice","invoice_ids":[split_sale,invoice]})),"split-payment").await;
+    assert_eq!(s, StatusCode::OK);
+    let split_payment = split_payment["id"].as_i64().unwrap();
+    let (s, connected, _) =
+        call(&app, &format!("/api/documents/{invoice}"), &staff, None, "").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(connected["payments"].as_array().unwrap().len(), 2);
+    assert_eq!(connected["delivery_orders"].as_array().unwrap().len(), 3);
+    assert!(
+        connected["payments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == split_payment)
+    );
+    let (s, receipt, _) = call(
+        &app,
+        &format!("/api/payments/{split_payment}"),
+        &staff,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(receipt["invoices"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        receipt["invoices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["allocated_amount"].as_i64().unwrap())
+            .sum::<i64>(),
+        150
+    );
+    let (_, order_detail, _) = call(
+        &app,
+        &format!("/api/delivery-orders/{id1}"),
+        &staff,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(order_detail["sales_invoice"]["id"], invoice);
+    assert_eq!(order_detail["details"][0]["product_id"], product_id);
+    let (_, purchase_detail, _) = call(
+        &app,
+        &format!("/api/documents/{purchase}"),
+        &staff,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(purchase_detail["purchase_order"]["id"], po);
+    let po_line = &purchase_detail["purchase_order_lines"][0];
+    assert_eq!(po_line["ordered_quantity"], 4);
+    assert_eq!(po_line["received_quantity"], 0);
+    assert_eq!(po_line["remaining_quantity"], 4);
+    assert_eq!(po_line["invoice_quantity"], 3);
+
+    let (_, po_detail, _) = call(&app, &format!("/api/documents/{po}"), &staff, None, "").await;
+    assert_eq!(po_detail["purchase_invoices"][0]["id"], purchase);
+    let (s, catalog, _) = call(
+        &app,
+        &format!("/api/products/{product_id}"),
+        &staff,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(catalog["purchase_orders"][0]["id"], po);
+    assert_eq!(catalog["purchase_invoices"][0]["id"], purchase);
+    assert_eq!(catalog["delivery_orders"].as_array().unwrap().len(), 3);
+    for path in [
+        "/api/products/999999",
+        "/api/payments/999999",
+        "/api/documents/999999",
+        "/api/delivery-orders/999999",
+    ] {
+        assert_eq!(
+            call(&app, path, &staff, None, "").await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    // Related-record responses respect permissions for every nested data type.
+    let(s,restricted,_)=call(&app,"/api/roles",&admin_cookie,Some(json!({"name":"CatalogOnly","permissions":["profile.read","products.read","invoices.read"]})),"catalog-role").await;
+    assert_eq!(s, StatusCode::OK);
+    let restricted = restricted["id"].as_i64().unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "/api/users",
+            &admin_cookie,
+            Some(json!({"username":"catalog","password":"asdqwe123!","role_id":restricted})),
+            "catalog-user"
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let catalog_user = login(&app, "catalog").await;
+    let (_, restricted_invoice, _) = call(
+        &app,
+        &format!("/api/documents/{invoice}"),
+        &catalog_user,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(restricted_invoice["access"]["payments"], false);
+    assert_eq!(restricted_invoice["payments"], json!([]));
+    assert_eq!(restricted_invoice["delivery_orders"], json!([]));
+    assert_eq!(
+        call(
+            &app,
+            &format!("/api/roles/{restricted}"),
+            &admin_cookie,
+            Some(json!({"name":"CatalogOnly","permissions":["profile.read","products.read"]})),
+            "restrict-catalog"
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let catalog_user = login(&app, "catalog").await;
+    let (s, restricted_product, _) = call(
+        &app,
+        &format!("/api/products/{product_id}"),
+        &catalog_user,
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(restricted_product["purchase_orders"], json!([]));
+    assert_eq!(restricted_product["purchase_invoices"], json!([]));
+    assert_eq!(restricted_product["sales_invoices"], json!([]));
+    assert_eq!(restricted_product["delivery_orders"], json!([]));
     // Rotation replay revokes both access and refresh tokens in that session, not other sessions.
     let old = login(&app, "staff").await;
     let (s, _, headers) = call(&app, "/api/auth/refresh", &old, Some(json!({})), "").await;

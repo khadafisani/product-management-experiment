@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { api, today, type Document } from '../../lib/api';
 	import { user } from '../../lib/auth';
 	type Order = {
@@ -15,6 +16,7 @@
 	type InvoiceLine = {
 		id: number;
 		item_name: string;
+		product_id: number;
 		quantity: number;
 		delivered_quantity: number;
 		on_delivery_quantity: number;
@@ -23,8 +25,7 @@
 	};
 	let orders = $state<Order[]>([]),
 		invoices = $state<Document[]>([]),
-		lines = $state<InvoiceLine[]>([]),
-		viewed = $state<any>(null);
+		lines = $state<InvoiceLine[]>([]);
 	let error = $state(''),
 		notice = $state(''),
 		busy = $state(false),
@@ -133,19 +134,14 @@
 				? 'Cancellation request sent to Finance.'
 				: `Delivery #${o.id}: ${status}`;
 			await load();
-			if (viewed?.order.id === o.id) viewed = await api(`/delivery-orders/${o.id}`);
 		} catch (e) {
 			error = (e as Error).message;
 		} finally {
 			busy = false;
 		}
 	}
-	async function view(id: number) {
-		try {
-			viewed = await api(`/delivery-orders/${id}`);
-		} catch (e) {
-			error = (e as Error).message;
-		}
+	function view(id: number) {
+		void goto(`/delivery-orders/${id}/`);
 	}
 </script>
 
@@ -187,8 +183,8 @@
 					></thead
 				><tbody
 					>{#each lines as l}<tr
-							><td>{l.item_name}</td><td>{l.quantity}</td><td>{l.delivered_quantity}</td><td
-								>{l.on_delivery_quantity}</td
+							><td><a class="record-link" href={`/products/${l.product_id}/`}>{l.item_name}</a></td
+							><td>{l.quantity}</td><td>{l.delivered_quantity}</td><td>{l.on_delivery_quantity}</td
 							><td
 								><input
 									type="number"
@@ -216,8 +212,11 @@
 			></thead
 		><tbody
 			>{#each orders as o}<tr
-					><td>#{o.id}</td><td
-						>{invoices.find((i) => i.id === o.sales_invoice_id)?.number ?? o.sales_invoice_id}</td
+					><td><a class="record-link" href={`/delivery-orders/${o.id}/`}>Delivery #{o.id}</a></td
+					><td
+						><a class="record-link" href={`/documents/${o.sales_invoice_id}/`}
+							>{invoices.find((i) => i.id === o.sales_invoice_id)?.number ?? o.sales_invoice_id}</a
+						></td
 					><td>{o.driver_name}<br />{o.date}</td><td>{o.address}</td><td>{o.status}</td><td
 						><button onclick={() => view(o.id)}>Details</button
 						>{#if o.status === 'Draft' && canWrite}<button disabled={busy} onclick={() => edit(o)}
@@ -240,17 +239,4 @@
 				>{:else}<tr><td colspan="6">No delivery orders yet.</td></tr>{/each}</tbody
 		>
 	</table>
-	{#if viewed}<section>
-			<h2>Delivery #{viewed.order.id} · {viewed.order.status}</h2>
-			<p>{viewed.order.note}</p>
-			{#if viewed.order.cancellation_note}<p>Cancellation: {viewed.order.cancellation_note}</p>{/if}
-			<table>
-				<thead><tr><th>Product</th><th>Quantity</th><th>Notes</th></tr></thead><tbody
-					>{#each viewed.details as d}<tr
-							><td>{d.product_name}</td><td>{d.quantity}</td><td>{d.notes}</td></tr
-						>{/each}</tbody
-				>
-			</table>
-			<button onclick={() => (viewed = null)}>Close details</button>
-		</section>{/if}
 </main>
